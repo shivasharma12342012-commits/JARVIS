@@ -1,0 +1,22 @@
+# --- Core runtime -------------------------------------------------------------
+ollama>=0.4.7               # Ollama Python client (native function calling + streaming)
+rich>=13.7.0                # Stark HUD: Live layouts, panels, tables, Markdown
+pydantic>=2.6.0             # typed settings model
+pydantic-settings>=2.2.0    # .env loading for Settings
+python-dotenv>=1.0.1        # dotenv support / standalone .env reads
+psutil>=5.9.8               # CPU, RAM, disk, battery, process telemetry
+numpy>=1.26                 # voiceprint MFCCs and the wake chime
+httpx>=0.27.0               # web_search transport (also an ollama dependency)
+prompt-toolkit>=3.0.43      # keeps the HUD pinned while you type; history + completion
+
+# --- Voice (optional but recommended) -----------------------------------------
+# J.A.R.V.I.S. degrades gracefully to a pure-text TUI if any of these are absent.
+SpeechRecognition>=3.10.1   # wake-word capture + transcription
+pyttsx3>=2.90               # offline TTS (SAPI5 on Windows, NSSpeech on macOS, espeak on Linux)
+pyaudio>=0.2.14             # microphone stream backend for SpeechRecognition
+
+# --- Optional extras ----------------------------------------------------------
+edge-tts>=6.1.10            # higher-quality British neural voice (needs ffplay for playback)
+# resemblyzer>=0.1.4       # far better speaker verification; needs MSVC Build Tools
+#                           for its webrtcvad dependency. Optional: speaker.py
+#                           uses it automatically when importable.
