@@ -1,0 +1,15 @@
+# Byte-compiled artefacts: regenerated on every run, never worth reviewing.
+__pycache__/
+*.py[cod]
+
+# Runtime state, local to one machine.
+logs/
+.jarvis_cache/
+.jarvis_profile.json
+.jarvis_voiceprint.json
+.env
+
+# Environments and test caches.
+.venv/
+venv/
+.pytest_cache/

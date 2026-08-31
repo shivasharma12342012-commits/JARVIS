@@ -1,13 +1,14 @@
 # --- Core runtime -------------------------------------------------------------
 ollama>=0.4.7               # Ollama Python client (native function calling + streaming)
-rich>=13.7.0                # Stark HUD: Live layouts, panels, tables, Markdown
+textual>=0.86.0             # the full-screen HUD: transcript, instruments, modals
+rich>=13.7.0                # renderables inside both HUDs: panels, tables, Markdown
 pydantic>=2.6.0             # typed settings model
 pydantic-settings>=2.2.0    # .env loading for Settings
 python-dotenv>=1.0.1        # dotenv support / standalone .env reads
 psutil>=5.9.8               # CPU, RAM, disk, battery, process telemetry
 numpy>=1.26                 # voiceprint MFCCs and the wake chime
 httpx>=0.27.0               # web_search transport (also an ollama dependency)
-prompt-toolkit>=3.0.43      # keeps the HUD pinned while you type; history + completion
+prompt-toolkit>=3.0.43      # keeps the classic HUD pinned while you type (--classic only)
 
 # --- Voice (optional but recommended) -----------------------------------------
 # J.A.R.V.I.S. degrades gracefully to a pure-text TUI if any of these are absent.
@@ -20,3 +21,9 @@ edge-tts>=6.1.10            # higher-quality British neural voice (needs ffplay 
 # resemblyzer>=0.1.4       # far better speaker verification; needs MSVC Build Tools
 #                           for its webrtcvad dependency. Optional: speaker.py
 #                           uses it automatically when importable.
+
+# --- Development --------------------------------------------------------------
+# Not needed to run him. `pytest -q` exercises the engine, the HUD and the boot
+# sequence with no Ollama daemon and no microphone.
+# pytest>=8.0
+# pytest-asyncio>=0.23

@@ -40,11 +40,23 @@ from config import PALETTE_STANDARD, STATE_IDLE, settings
 from jarvis import __version__, prompts
 from jarvis import apps, languages, locales, speaker
 from jarvis.core import JarvisAgent
+from jarvis.engine import build_agent
 from jarvis.monitor import AmbientMonitor, telemetry_report
 from jarvis.permissions import PermissionBroker
 from jarvis.protocols import ProtocolEngine
 from jarvis.tools import build_registry
 from jarvis.ui import PALETTES, StarkHUD
+
+# The full-screen front end is optional: without textual installed J.A.R.V.I.S.
+# still runs, on the pinned-strip HUD, and says so rather than failing to start.
+try:
+    from jarvis.tui import JarvisTUI
+    from jarvis.tui import available as tui_available
+except ImportError:  # pragma: no cover - optional dependency
+    JarvisTUI = None  # type: ignore[assignment]
+
+    def tui_available() -> bool:  # type: ignore[misc]
+        return False
 from jarvis.voice import VoiceSystem
 
 LOG = logging.getLogger("jarvis.main")
@@ -83,6 +95,7 @@ COMMANDS: list[tuple[str, str]] = [
     ("/mics", "Enumerate the available input devices."),
     ("/theme <palette>", "Switch the HUD palette."),
     ("/title <value>", "Change how I address you. Persisted."),
+    ("/metrics", "Latency of the last turn: first token, throughput, tool time."),
 ]
 
 # Spoken answers to the onboarding question arrive as words, not digits, and
@@ -133,6 +146,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="force text mode: no microphone, no speech synthesis, no audio imports",
     )
     parser.add_argument("--no-hud", action="store_true", help="disable the live HUD; plain lines only")
+    parser.add_argument(
+        "--classic",
+        action="store_true",
+        help="use the pinned status strip instead of the full-screen HUD",
+    )
+    parser.add_argument(
+        "--no-turbo",
+        action="store_true",
+        help="drive the model synchronously: no warm-up, no parallel instruments",
+    )
     parser.add_argument("--no-monitor", action="store_true", help="do not start the ambient monitor")
     parser.add_argument("--model", metavar="NAME", default=None, help="override the Ollama model name")
     parser.add_argument("--host", metavar="URL", default=None, help="override the Ollama host URL")
@@ -383,7 +406,8 @@ class JarvisApplication:
 
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
-        self.hud: StarkHUD | None = None
+        self.hud: Any = None
+        self.tui: Any = None
         self.voice: VoiceSystem | None = None
         self.monitor: AmbientMonitor | None = None
         self.engine: ProtocolEngine | None = None
@@ -399,6 +423,8 @@ class JarvisApplication:
         self._shutdown_done = False
         self._shutdown_lock = threading.Lock()
         self._listening = False
+        self._exit_code = 0
+        self._consumer: threading.Thread | None = None
 
     # -- construction ------------------------------------------------------------------
     def build_frontend(self) -> None:
@@ -407,7 +433,20 @@ class JarvisApplication:
         These two come up before everything else because onboarding needs a way
         to ask its question and, ideally, a voice to ask it with.
         """
-        self.hud = StarkHUD(palette=PALETTE_STANDARD, enabled=settings.HUD_ENABLED)
+        if self.tui_wanted():
+            assert JarvisTUI is not None
+            self.tui = JarvisTUI(
+                on_submit=self._on_tui_submit,
+                on_ready=self._tui_boot,
+                on_quit=self._on_tui_quit,
+                on_interrupt=self._interrupt_or_quit,
+                on_toggle_speech=self._toggle_speech,
+            )
+            self.hud = self.tui
+            LOG.info("front end: full-screen HUD")
+        else:
+            self.hud = StarkHUD(palette=PALETTE_STANDARD, enabled=settings.HUD_ENABLED)
+            LOG.info("front end: pinned status strip")
         if settings.voice_wanted:
             self.voice = VoiceSystem(
                 on_wake=self._on_wake,
@@ -439,8 +478,12 @@ class JarvisApplication:
         self.registry = build_registry(
             self.engine, self.hud, self.monitor, self.broker
         )
-        self.agent = JarvisAgent(
+        # build_agent hands back the asynchronous core where the installed
+        # ollama client supports it, and the synchronous one where it does not.
+        # The two behave identically; only the waiting differs.
+        self.agent = build_agent(
             self.registry,
+            turbo=not getattr(self.args, "no_turbo", False),
             hud=self.hud,
             voice=self.voice,
             protocol_engine=self.engine,
@@ -453,11 +496,12 @@ class JarvisApplication:
             hud=self.hud, voice=self.voice, protocol_engine=self.engine
         )
         LOG.info(
-            "wired: %d tools, %d protocols, model=%s host=%s",
+            "wired: %d tools, %d protocols, model=%s host=%s engine=%s",
             len(self.registry.names()),
             len(self.engine.names()),
             settings.MODEL_NAME,
             settings.OLLAMA_HOST,
+            type(self.agent).__name__,
         )
 
     # -- small helpers -----------------------------------------------------------------
@@ -761,8 +805,129 @@ class JarvisApplication:
 
         self._log_system("Type /help for the command set.", "info")
 
+
     # ==================================================================================
-    # Steps 7 and 8 - the loop and the slash commands
+    # The full-screen front end
+    # ==================================================================================
+    def tui_wanted(self) -> bool:
+        """Decide which front end this invocation should get.
+
+        The full-screen HUD needs a real terminal to take over. Piped output, a
+        one-shot ``--ask``, ``--check`` and ``--no-hud`` all want plain lines they
+        can capture, and ``--classic`` is the operator saying so outright.
+        """
+        if getattr(self.args, "classic", False) or self.args.no_hud:
+            return False
+        if self.args.ask or self.args.check or self.args.list_mics:
+            return False
+        if not settings.HUD_ENABLED:
+            return False
+        if JarvisTUI is None or not tui_available():
+            return False
+        try:
+            return bool(sys.stdout.isatty() and sys.stdin is not None and sys.stdin.isatty())
+        except Exception:
+            return False
+
+    def _tui_boot(self) -> None:
+        """Everything ``run`` does for the classic front end, but on screen.
+
+        Called from a worker thread once the display is mounted, so the operator
+        watches the system come up inside the HUD rather than staring at a bare
+        terminal while it does.
+        """
+        assert self.tui is not None
+        self.run_onboarding()
+        self.tui.refresh_prompt_label()
+
+        self.wire_backend()
+        self.tui.set_tools(self.registry.names())
+        self.tui.bind_busy(self._agent_busy)
+
+        model_ok, _message = self.preflight()
+        if model_ok:
+            self.warm_up()
+
+        self.boot()
+        if self.args.protocol:
+            self.run_protocol(self.args.protocol)
+        self._start_consumer()
+        self._exit_code = 0 if model_ok else 0  # a cold daemon is degraded, not fatal
+
+    def warm_up(self) -> None:
+        """Load the model into the daemon while the operator reads the banner.
+
+        The first question of a session otherwise pays for the weights coming off
+        disk — several seconds, every time, for nothing.
+        """
+        warmer = getattr(self.agent, "warm_up", None)
+        if not callable(warmer):
+            return
+        try:
+            warmer(blocking=False)
+            LOG.info("model warm-up requested")
+        except Exception:
+            LOG.debug("warm-up could not be started", exc_info=True)
+
+    def _on_tui_submit(self, text: str) -> None:
+        """One line from the composer. Runs on a worker thread, not the UI's."""
+        self._dispatch(InputEvent("typed", text))
+
+    def _on_tui_quit(self) -> None:
+        """The operator asked to leave; stop the producers before the screen goes."""
+        self._running = False
+        self._stopping.set()
+
+    def _toggle_speech(self) -> None:
+        """Ctrl-S: speak, or stop speaking."""
+        if self.voice is None:
+            self._log_system(
+                "The voice subsystem is off for this session — relaunch without --text.",
+                "warn",
+            )
+            return
+        if self.voice.is_muted():
+            self.enable_talking()
+        else:
+            self.silence()
+
+    def _start_consumer(self) -> None:
+        """Drain the shared queue while the TUI owns the main thread.
+
+        Spoken utterances and signal-driven quits arrive on the same queue the
+        classic REPL reads; under the full-screen HUD nobody is reading it, so
+        this thread takes that job.
+        """
+        if self._consumer is not None:
+            return
+        self._running = True
+        self._consumer = threading.Thread(
+            target=self._consume_queue, name="tui-queue", daemon=True
+        )
+        self._consumer.start()
+
+    def _consume_queue(self) -> None:
+        while self._running and not self._stopping.is_set():
+            try:
+                event = self._queue.get(timeout=0.25)
+            except queue.Empty:
+                continue
+            try:
+                self._dispatch(event)
+            except Exception:
+                LOG.exception("dispatch failed for %r", event.text[:80])
+                self._log_system("That request faulted. The details are in the log.", "error")
+
+    def run_tui(self) -> int:
+        """Own the terminal until the operator leaves. Returns the exit code."""
+        self.build_frontend()
+        self.install_signal_handlers()
+        assert self.tui is not None
+        self.tui.run()
+        return self._exit_code
+
+    # ==================================================================================
+    # Step 7 - the classic loop
     # ==================================================================================
     def repl(self) -> None:
         """Drain the input queue on the main thread until told to stop.
@@ -1003,6 +1168,7 @@ class JarvisApplication:
             "tools": self._cmd_tools,
             "model": self._cmd_model,
             "history": self._cmd_history,
+            "metrics": self._cmd_metrics,
             "mics": self._cmd_mics,
             "theme": self._cmd_theme,
             "title": self._cmd_title,
@@ -1035,6 +1201,10 @@ class JarvisApplication:
     def _cmd_quit(self, argument: str) -> None:
         """Leave the loop; ``run`` handles the orderly teardown."""
         self._running = False
+        if self.tui is not None:
+            # The classic loop exits by falling out of `repl`; the full-screen one
+            # is blocking the main thread and has to be told.
+            self.tui.stop()
 
     def _cmd_clear(self, argument: str) -> None:
         """Drop the conversation memory and wipe the transcript."""
@@ -1171,6 +1341,30 @@ class JarvisApplication:
                 f"{settings.MODEL_NAME} {'online' if ok else 'unreachable'}"
             )
         self.hud.render_table("Model", ["Setting", "Value"], rows)
+
+    def _cmd_metrics(self, argument: str) -> None:
+        """Report what the last turn cost, and where the time went."""
+        metrics = getattr(self.agent, "metrics", None)
+        if metrics is None or not getattr(metrics, "total", 0.0):
+            self._log_system(
+                "Nothing measured yet — ask me something first.", "info"
+            )
+            return
+        rows = [
+            ("First token", f"{metrics.ttft * 1000:.0f} ms"),
+            ("Throughput", f"{metrics.tokens_per_second:.1f} tokens/second"),
+            ("Model time", f"{metrics.model_seconds:.2f} s"),
+            ("Instrument time", f"{metrics.tool_seconds:.2f} s"),
+            ("Instruments", str(metrics.tool_calls)),
+            ("Run in parallel", "yes" if metrics.parallel_peak > 1 else "no"),
+            ("Saved by parallelism", f"{metrics.tool_seconds_saved:.2f} s"),
+            ("Iterations", str(metrics.iterations)),
+            ("Total", f"{metrics.total:.2f} s"),
+        ]
+        if getattr(metrics, "eval_tokens", 0):
+            rows.insert(2, ("Tokens generated", str(metrics.eval_tokens)))
+        assert self.hud is not None
+        self.hud.render_table("Last turn", ["Measure", "Value"], rows)
 
     def _cmd_history(self, argument: str) -> None:
         """Show the tail of the conversation memory."""
@@ -1503,6 +1697,13 @@ class JarvisApplication:
             except Exception:
                 LOG.exception("monitor shutdown failed")
 
+        closer = getattr(self.agent, "close", None)
+        if callable(closer):
+            try:
+                closer()
+            except Exception:
+                LOG.exception("engine shutdown failed")
+
         if self.hud is not None:
             try:
                 self.hud.stop()
@@ -1541,6 +1742,19 @@ class JarvisApplication:
     def run(self) -> int:
         """Run whichever mode the command line selected. Returns the exit code."""
         exit_code = 0
+        if self.tui_wanted():
+            # The full-screen HUD owns the main thread and boots itself once it is
+            # on screen, so the whole sequence below happens inside `run_tui`.
+            try:
+                return self.run_tui()
+            except KeyboardInterrupt:
+                LOG.info("interrupted")
+                return 0
+            except Exception:
+                LOG.exception("fatal error in the full-screen front end")
+                return 1
+            finally:
+                self.shutdown(spoken=True)
         try:
             self.build_frontend()
             self.run_onboarding()
