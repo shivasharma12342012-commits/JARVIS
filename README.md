@@ -20,7 +20,8 @@ languages including Hindi, Bengali, Telugu, Marathi and Tamil.
 
 | | |
 |---|---|
-| **Stark HUD** | A live terminal display: animated Unicode soundwave, colour-coded state, real-time CPU/RAM/disk/battery/GPU gauges pinned above the prompt. Four palettes that swap when a protocol engages. |
+| **Full-screen HUD** | The whole terminal, given over to the work: a scrollable transcript, replies that arrive word by word, instrument cards that spin while they run, live CPU/RAM/disk/battery/GPU gauges with history, and a latency panel that says where every millisecond went. Four palettes that swap when a protocol engages. `--classic` restores the old pinned strip. |
+| **Built to answer fast** | The model is loaded before you ask; the reply streams to the screen as it is generated; independent instruments run side by side; Ctrl-C tears the request down rather than asking it to stop when convenient. |
 | **Wake-word voice** | Say **"Hello J.A.R.V.I.S."** or **"Namaste, J.A.R.V.I.S."** Background listening, a rising chime, and he never answers his own echo. |
 | **Knows your voice** | Enrol once and the call word is checked against your voiceprint. |
 | **Background listener** | `--daemon` waits for the call word with no window open, greets you, and opens a terminal. |
@@ -478,6 +479,7 @@ path is asserted to resolve under the project root before anything is unlinked.
 | `/theme <palette>` | `standard`, `house_party`, `veronica`, `clean_slate` |
 | `/title <value>` | Change how he addresses you |
 | `/model` · `/history` · `/clear` | Model info · transcript · reset context |
+| `/metrics` | Where the last turn's time went: first token, throughput, instrument time |
 | `/quit` · `/exit` | Shut down cleanly |
 
 ### Command line
@@ -491,6 +493,8 @@ path is asserted to resolve under the project root before anything is unlinked.
 | `--locales` · `--toolchains` · `--list-mics` | Print a table and exit |
 | `--protocol <name>` | Fire a protocol at boot |
 | `--model <name>` · `--host <url>` | Override Ollama settings |
+| `--classic` | The pinned status strip instead of the full-screen HUD |
+| `--no-turbo` | Drive the model synchronously: no warm-up, no parallel instruments |
 | `--no-hud` · `--no-monitor` | Plain output · no ambient thread |
 | `--talk` | Start in speaking mode instead of silent |
 | `--allow-all` | Approve every out-of-workspace action without prompting (scripting only) |
@@ -499,6 +503,122 @@ path is asserted to resolve under the project root before anything is unlinked.
 | `--daemon` / `--listen` | Background listener; opens a terminal on the call word |
 | `--reset-profile` | Forget the form of address and ask again |
 | `--debug` | Log at DEBUG |
+
+---
+
+## The HUD
+
+The default front end takes the whole terminal.
+
+```
+ J.A.R.V.I.S. · Just A Rather Very Intelligent System
+                                                   ╭─ reactor ─────────╮
+ Sir · 16:09                                       │  ▇▆▃▆▆▄▅▇▅▃▆▆▄▅▇  │
+ check the workshop and search arc reactor output  │  THINKING         │
+                                                   ╰───────────────────╯
+   ✓ system_diagnostics(scope=summary)  0.31s      ╭─ vitals ──────────╮
+     CPU 38%, RAM 71.5%, disk 94%                  │ CPU ███░░░░░  38% │
+   ⠸ web_search(query=arc reactor output)  1.2s    │ RAM ██████░░  72% │
+                                                   │ DSK ████████  94% │
+ Workshop is healthy, Sir, with one caveat:        │ BAT ██████░░ 76%⚡│
+                                                   ╰───────────────────╯
+  • Root disk at 94%                               ╭─ last turn ───────╮
+  • Memory at 71.5%                                │ first token 310ms │
+                                                   │ throughput 68 t/s │
+ Shall I clear the build caches?▍                  │ parallel   −1.2 s │
+                                                   ╰───────────────────╯
+ Sir ›  ask me anything — /help for commands
+ ^d Quit  ^c Interrupt  ^l Clear  ^s Speech  ^b Panel  ^r Reasoning  f1 Help
+```
+
+| Key | |
+|---|---|
+| `enter` | Send |
+| `ctrl+c` | Interrupt the turn in progress; at an idle prompt, leave |
+| `ctrl+d` | Leave |
+| `ctrl+l` | Clear the transcript |
+| `ctrl+s` | Speech on / off |
+| `ctrl+b` | Show or hide the instrument panel |
+| `ctrl+r` | Show or hide the model's reasoning |
+| `ctrl+p` | Command palette |
+| `↑` / `↓` | Walk back through what you have asked |
+| `f1` / `?` | Keys and commands |
+
+The mouse works: scroll the transcript, click to focus, select text.
+
+Permission requests arrive as a modal dialog rather than a line of prose, so an
+irreversible action cannot be approved by a keystroke aimed at something else.
+The transcript keeps four hundred entries mounted and the log keeps all of them.
+
+It steps aside when it should. `--classic` gives you the pinned status strip;
+`--no-hud`, `--ask`, `--check` and any non-terminal stdout give you plain lines
+that pipe cleanly. Without `textual` installed, the classic HUD is used and the
+rest of the system is unaffected. Below about ninety columns the instrument
+panel hides itself until you ask for it with `ctrl+b`.
+
+---
+
+## Why it answers quickly
+
+Four measured changes, all in `jarvis/engine.py`. `--no-turbo` disables the lot
+and falls back to the synchronous core in `jarvis/core.py`, which behaves
+identically and simply waits more.
+
+**The model is warm before you ask.** At boot, an empty-prompt request loads the
+weights into the daemon and `OLLAMA_KEEP_ALIVE` pins them there. The first
+question of a session otherwise pays several seconds for something that has
+nothing to do with the question.
+
+**The reply is on screen while it is still being written.** Tokens go to the
+display as they arrive rather than being buffered and rendered once at the end.
+The perceived latency of an answer is when its first word appears, not its last.
+
+**Independent instruments run at the same time.** Two web searches in one turn
+cost one web search. Anything marked dangerous — the tools that route through
+the permission broker — is still run one at a time, because two consent dialogs
+at one terminal is not a race the operator should have to win. Results are
+written back in the order the model asked for them regardless of the order they
+finish in.
+
+**Ctrl-C actually stops it.** The turn runs as an asyncio task; interrupting
+cancels it, which tears down the HTTP read immediately instead of waiting for
+the next chunk to arrive before noticing a flag.
+
+Two smaller things: one pooled, keep-alive connection is held open for the
+session rather than dialled per turn, and the display coalesces — a model
+emitting three hundred tokens a second costs thirty redraws a second, not three
+hundred.
+
+`/metrics` reports the last turn:
+
+```
+ Measure               Value
+ First token           310 ms
+ Throughput            68.4 tokens/second
+ Model time            3.41 s
+ Instrument time       0.62 s
+ Instruments           2
+ Run in parallel       yes
+ Saved by parallelism  0.58 s
+ Total                 4.10 s
+```
+
+Throughput comes from the daemon's own `eval_count` and `eval_duration` where it
+reports them, so it is measured rather than inferred.
+
+---
+
+## Tests
+
+```
+pip install pytest pytest-asyncio
+pytest -q
+```
+
+Twenty-nine tests, no Ollama daemon, no microphone, a few seconds. The model is
+a scripted fake and the HUD is driven through Textual's pilot, so the suite
+covers streaming, tool parallelism, cancellation, the transcript, the modal
+dialogs and the whole boot sequence.
 
 ---
 
@@ -534,6 +654,7 @@ config.py            Pydantic settings, palettes, states, the operator profile
 main.py              Entry point: CLI, onboarding, wiring, REPL, shutdown
 jarvis/
   core.py            ReAct loop over Ollama, streaming, conversation memory
+  engine.py          The fast path: async client, warm-up, parallel instruments
   tools.py           Tool registry, JSON schemas, the eight instruments
   protocols.py       Stark Protocol engine and the three macros
   voice.py           Wake words, background listening, non-blocking TTS
@@ -544,14 +665,19 @@ jarvis/
   apps.py            Resolving, launching and closing applications
   speaker.py         Voiceprint enrolment and verification (pure numpy)
   daemon.py          The background wake listener
-  ui.py              The HUD: palettes, waveform, gauges, panels
+  ui.py              The classic HUD: pinned status strip above a scrolling shell
+  tui.py             The full-screen HUD: transcript, instruments, modals
   prompts.py         System prompt and personality
+tests/               Engine, HUD and boot-sequence tests; no daemon, no microphone
 ```
 
-The import graph is strictly acyclic. `config` sits at the bottom; `monitor`, `ui`,
+The import graph is strictly acyclic. `config` sits at the bottom; `monitor`, `ui`, `tui`,
 `voice`, `languages` and `locales` import nothing from the project but `config`; `ui` and
 `voice` objects reach the rest of the system only as constructor arguments, always
-duck-typed and always optional. Every module degrades rather than raising: no microphone
+duck-typed and always optional. `tui.py` presents exactly the interface `ui.py` presents,
+method for method, so the agent, the monitor, the voice system and the permission broker
+bind to whichever display was chosen without knowing which one they got — and `engine.py`
+subclasses `core.py` rather than replacing it, so a turn behaves the same on either path. Every module degrades rather than raising: no microphone
 means a text TUI, no Ollama means diagnostics and protocols still work, no compiler for a
 language means a clear refusal with an install hint.
 
