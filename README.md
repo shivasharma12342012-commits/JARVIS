@@ -154,7 +154,7 @@ The voiceprint is a scale-equalised MFCC embedding compared by cosine similarity
 Benchmarked twice on this machine against seven synthetic voices (male and female;
 British, Indian, American and Hindi), with the enrolment taken from five clips:
 
-| | owner | closest impostor (same accent, same sex) |
+| | owner | closest impostor (same accent, same gender) |
 |---|---|---|
 | Full sentences | 0.870 – 0.917 | 0.783 |
 | **Short wake phrases** | 0.696 – 0.827 | 0.673 – 0.707 |
