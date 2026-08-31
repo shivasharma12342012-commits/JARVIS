@@ -36,7 +36,14 @@ from pathlib import Path
 from typing import Any, Sequence
 
 import config
-from config import PALETTE_STANDARD, STATE_IDLE, settings
+from config import (
+    INTERRUPT_WORDS,
+    PALETTE_STANDARD,
+    QUIET_WORDS,
+    STATE_IDLE,
+    TALK_WORDS,
+    settings,
+)
 from jarvis import __version__, prompts
 from jarvis import apps, languages, locales, speaker
 from jarvis.core import JarvisAgent
@@ -709,6 +716,11 @@ class JarvisApplication:
             self.hud.set_model_status(
                 f"{settings.MODEL_NAME} {'online' if ok else 'unreachable'}"
             )
+            # The full-screen greeting reports what preflight found rather than
+            # opening with a pleasantry the machine cannot back up.
+            note = getattr(self.hud, "set_model_ready", None)
+            if callable(note):
+                note(ok)
         self._log_system(message, "success" if ok else "error")
         if not ok:
             # Print the literal fix rather than a shrug. Degraded, not dead: the
@@ -1826,24 +1838,6 @@ ENROLL_PHRASES = [
     "Namaste, J.A.R.V.I.S.",
     "This is my voice, and I would like you to remember it.",
 ]
-
-
-#: Typed on their own with no slash, these switch speaking on. Bare words are matched
-#: against the *whole* line only, so "talk to me about generics" still reaches the model.
-TALK_WORDS = {
-    "talk", "speak", "talk to me", "voice", "voice on", "speak up", "unmute",
-    "bolo", "baat karo", "bol",
-}
-
-#: ...and these shut him up immediately. Hinglish included because that is how the
-#: instruction actually arrives when he is halfway through a sentence.
-QUIET_WORDS = {
-    "quiet", "be quiet", "shut up", "shutup", "silence", "mute", "hush",
-    "stop talking", "chup", "chup kar", "chup ho ja", "bas", "bas karo",
-}
-
-#: Only silences him while he is actually speaking; otherwise it is a normal message.
-INTERRUPT_WORDS = {"stop", "ruko", "wait", "enough"}
 
 
 def _bare_key(text: str) -> str:

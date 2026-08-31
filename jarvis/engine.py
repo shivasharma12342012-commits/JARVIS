@@ -377,6 +377,7 @@ class TurboAgent(JarvisAgent):
         elapsed = time.monotonic() - started
         _LOG.info("Model %s warm in %.2fs", settings.MODEL_NAME, elapsed)
         self._hud_call("set_model_status", f"{settings.MODEL_NAME} · warm")
+        self._hud_call("set_warm", True)
         return True
 
     # -- the loop --------------------------------------------------------------------

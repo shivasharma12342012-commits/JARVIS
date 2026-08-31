@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import threading
 import types
 
 import pytest
 
-from config import PALETTE_HOUSE_PARTY, PALETTE_STANDARD, STATE_SPEAKING, STATE_THINKING
+from config import PALETTE_HOUSE_PARTY, PALETTE_STANDARD, STATE_THINKING
 from jarvis import tui as tui_mod
+from textual.widgets import Static
+
 from jarvis.tui import JarvisTUI
 
 
@@ -37,6 +40,15 @@ async def _settle(pilot, frames: int = 6) -> None:
 
 def _kinds(app) -> list[str]:
     return [type(w).__name__ for w in app.query_one("#transcript").children]
+
+
+def _plain(widget) -> str:
+    """What a widget draws, as plain text, whatever renderable it used."""
+    from rich.console import Console
+
+    console = Console(width=120, record=True, file=open(os.devnull, "w"))
+    console.print(widget.render())
+    return console.export_text()
 
 
 async def test_the_hud_offers_everything_the_agent_expects():
@@ -148,9 +160,15 @@ async def test_a_tool_card_is_updated_in_place_rather_than_repeated():
 
 
 async def test_the_sidebar_reports_telemetry_and_latency():
+    """Hidden by default, because Claude Code has no sidebar -- but live behind
+    ctrl+b, and still measuring while it is away."""
     app = JarvisTUI(tools=["a", "b"])
     async with app.run_test(size=(110, 36)) as pilot:
         await _settle(pilot)
+        assert not app.query_one("#sidebar").has_class("shown")
+        await pilot.press("ctrl+b")
+        await _settle(pilot)
+        assert app.query_one("#sidebar").has_class("shown")
         app.set_telemetry(TELEMETRY)
         app.set_metrics(METRICS)
         app.set_model_status("gemma4:31b-cloud · warm")
@@ -274,10 +292,10 @@ async def test_keys_clear_the_transcript_and_hide_the_panel():
 
         await pilot.press("ctrl+b")
         await pilot.pause()
-        assert app.query_one("#sidebar").has_class("hidden")
+        assert app.query_one("#sidebar").has_class("shown")
         await pilot.press("ctrl+b")
         await pilot.pause()
-        assert not app.query_one("#sidebar").has_class("hidden")
+        assert not app.query_one("#sidebar").has_class("shown")
 
 
 async def test_the_transcript_is_bounded():
@@ -288,3 +306,190 @@ async def test_the_transcript_is_bounded():
             app.log_system(f"line {index}", "info")
         await _settle(pilot, frames=40)
         assert len(app.query_one("#transcript").children) <= tui_mod._MAX_ENTRIES
+
+
+# ──────────────────────────────────────────────────────── the Claude Code idiom
+async def test_the_name_sits_at_the_top_beside_whatever_is_answering():
+    app = JarvisTUI()
+    async with app.run_test(size=(100, 30)) as pilot:
+        await _settle(pilot)
+        app.set_model_status("gemma4:31b-cloud")
+        await _settle(pilot)
+        masthead = _plain(app.query_one("#masthead"))
+        assert tui_mod.SPARK in masthead
+        assert "J.A.R.V.I.S." in masthead
+        assert "gemma4:31b-cloud" in masthead
+
+
+async def test_the_greeting_holds_the_window_until_something_is_said():
+    app = JarvisTUI()
+    async with app.run_test(size=(100, 30)) as pilot:
+        await _settle(pilot)
+        assert not app.query_one("#greeting").has_class("hidden")
+        assert app.query_one("#transcript").has_class("hidden")
+
+        app.log_user("hello")
+        await _settle(pilot)
+        assert app.query_one("#greeting").has_class("hidden")
+        assert not app.query_one("#transcript").has_class("hidden")
+
+        # Clearing the session puts it back, which is what a cleared session is.
+        app.clear_transcript()
+        await _settle(pilot)
+        assert not app.query_one("#greeting").has_class("hidden")
+        assert app.query_one("#transcript").has_class("hidden")
+
+
+async def test_the_greeting_greets_by_the_clock_and_by_name(monkeypatch):
+    from config import settings
+
+    monkeypatch.setattr(settings, "USER_NAME", "Shiva")
+    app = JarvisTUI()
+    async with app.run_test(size=(100, 30)) as pilot:
+        await _settle(pilot)
+        greeting = _plain(app.query_one("#greeting"))
+        opener = tui_mod._OPENERS[tui_mod._time_of_day()].format(address="Shiva")
+        assert opener in greeting
+        assert "? for shortcuts" in greeting
+
+
+async def test_the_greeting_reports_the_machine_rather_than_a_pleasantry():
+    """A greeting that says all is well while the battery dies is worse than none."""
+    flat = types.SimpleNamespace(
+        cpu_percent=5.0, ram_percent=20.0, disks=[], gpus=[],
+        battery_percent=11.0, battery_plugged=False, uptime_seconds=60,
+    )
+    app = JarvisTUI()
+    async with app.run_test(size=(100, 30)) as pilot:
+        await _settle(pilot)
+        app.set_telemetry(flat)
+        await _settle(pilot)
+        assert "Battery is at 11%" in _plain(app.query_one("#greeting"))
+
+        # An unreachable daemon outranks everything: nothing else can happen.
+        app.set_model_ready(False)
+        await _settle(pilot)
+        assert "cannot reach the reasoning core" in _plain(app.query_one("#greeting"))
+
+
+async def test_the_working_line_counts_up_and_says_how_to_stop():
+    app = JarvisTUI()
+    async with app.run_test(size=(100, 30)) as pilot:
+        await _settle(pilot)
+        assert _plain(app.query_one("#status")).strip() == ""
+
+        app.set_state(STATE_THINKING)
+        app.stream_begin()
+        for _ in range(1400):
+            app.stream_token("x")
+        await _settle(pilot)
+
+        line = _plain(app.query_one("#status"))
+        assert "esc to interrupt" in line
+        assert "1.4k tokens" in line, line
+        assert app.query_one("#composer").has_class("busy")
+
+        app.set_state("idle")
+        await _settle(pilot)
+        assert _plain(app.query_one("#status")).strip() == ""
+        assert not app.query_one("#composer").has_class("busy")
+
+
+async def test_a_tool_reads_as_a_bullet_with_its_result_hanging_underneath():
+    app = JarvisTUI()
+    async with app.run_test(size=(100, 30)) as pilot:
+        await _settle(pilot)
+        app.log_tool_start("web_search", {"query": "arc reactor"})
+        app.log_tool("web_search", {"query": "arc reactor"}, "3 results", True)
+        await _settle(pilot)
+        card = [w for w in app.query_one("#transcript").children
+                if type(w).__name__ == "ToolEntry"][0]
+        rendered = _plain(card)
+        assert rendered.startswith(tui_mod.BULLET)
+        assert "web_search(query=arc reactor)" in rendered
+        assert tui_mod.BRANCH in rendered and "3 results" in rendered
+
+
+async def test_escape_interrupts_the_turn():
+    interrupts: list[bool] = []
+    app = JarvisTUI(on_interrupt=lambda: interrupts.append(True) or True)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await _settle(pilot)
+        await pilot.press("escape")
+        await _settle(pilot)
+    assert interrupts == [True]
+
+
+# ────────────────────────────────────────────────────────────── live keywords
+def test_the_bare_keywords_are_coloured_apart():
+    """`talk` and `quiet` act the moment they are sent, so they are lit as typed."""
+    from rich.text import Text
+
+    from jarvis.tui import KEYWORDS, keyword_style
+
+    def spans(line: str) -> list[tuple[str, str]]:
+        text = Text(line)
+        KEYWORDS.highlight(text)
+        return [(line[s.start : s.end], s.style) for s in text.spans]
+
+    assert spans("talk") == [("talk", keyword_style("talk"))]
+    assert spans("quiet") == [("quiet", keyword_style("quiet"))]
+    # The two must never share a colour: one opens the speaker, one closes it.
+    assert keyword_style("talk") != keyword_style("quiet")
+
+
+def test_multi_word_keywords_win_over_their_own_prefixes():
+    from rich.text import Text
+
+    from jarvis.tui import KEYWORDS, keyword_style
+
+    text = Text("please shut up")
+    KEYWORDS.highlight(text)
+    assert [(s.start, s.end) for s in text.spans] == [(7, 14)]
+    assert text.spans[0].style == keyword_style("quiet")
+
+
+def test_ordinary_prose_that_merely_contains_a_keyword_is_left_alone():
+    from rich.text import Text
+
+    from jarvis.tui import KEYWORDS
+
+    for line in ("talkative", "basement", "a quieter approach", "muted colours"):
+        text = Text(line)
+        KEYWORDS.highlight(text)
+        assert text.spans == [], line
+
+
+async def test_the_composer_and_the_echo_both_light_the_keyword():
+    from jarvis.tui import KEYWORDS, keyword_style
+
+    app = JarvisTUI()
+    async with app.run_test(size=(100, 30)) as pilot:
+        await _settle(pilot)
+        assert app.query_one("#prompt").highlighter is KEYWORDS
+
+        app.log_user("quiet")
+        await _settle(pilot)
+        echo = [w for w in app.query_one("#transcript").children
+                if type(w).__name__ == "UserEntry"][0]
+        styles = [span.style for span in echo.source.spans]
+        assert keyword_style("quiet") in styles
+
+
+async def test_help_opens_and_closes_without_faulting():
+    app = JarvisTUI()
+    async with app.run_test(size=(110, 40)) as pilot:
+        await _settle(pilot)
+        await pilot.press("f1")
+        await _settle(pilot)
+        assert len(app.screen_stack) == 2
+        # Every section composed, and the live keywords are explained by name.
+        rendered = "\n".join(
+            _plain(w) for w in app.screen.query(Static) if w.id != "dialog"
+        )
+        for section in ("Keys", "Words", "Commands", "esc to close"):
+            assert section in rendered, rendered
+        assert "talk" in rendered and "quiet" in rendered
+        await pilot.press("escape")
+        await _settle(pilot)
+        assert len(app.screen_stack) == 1
