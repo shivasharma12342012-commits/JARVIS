@@ -49,6 +49,32 @@ HONORIFICS: dict[str, str] = {
 }
 PROFILE_PATH = PROJECT_ROOT / ".jarvis_profile.json"
 
+# --------------------------------------------------------------------------------------
+# Bare keywords. Typed on their own, with no slash, these act immediately rather than
+# going to the model: they are the two things an operator most often needs to say in a
+# hurry, and reaching for a command prefix mid-sentence defeats the point. They live
+# here rather than in main.py so the display can highlight them as they are typed
+# without importing the entry point.
+# --------------------------------------------------------------------------------------
+#: Speaking mode on. Bare words are matched against the *whole* line only, so
+#: "talk to me about generics" still reaches the model.
+TALK_WORDS: frozenset[str] = frozenset({
+    "talk", "speak", "talk to me", "voice", "voice on", "speak up", "unmute",
+    "bolo", "baat karo", "bol",
+})
+
+#: ...and these shut him up immediately. Hinglish included because that is how the
+#: instruction actually arrives when he is halfway through a sentence.
+QUIET_WORDS: frozenset[str] = frozenset({
+    "quiet", "be quiet", "shut up", "shutup", "silence", "mute", "hush",
+    "stop talking", "chup", "chup kar", "chup ho ja", "bas", "bas karo",
+})
+
+#: Only silences him while he is actually speaking; otherwise it is a normal message,
+#: which is why these are deliberately *not* highlighted as live keywords.
+INTERRUPT_WORDS: frozenset[str] = frozenset({"stop", "ruko", "wait", "enough"})
+
+
 
 class Settings(BaseSettings):
     """Every tunable parameter in the system."""

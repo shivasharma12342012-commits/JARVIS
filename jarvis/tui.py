@@ -29,6 +29,8 @@ from __future__ import annotations
 
 import logging
 import queue
+import random
+import re
 import shutil
 import threading
 import time
@@ -39,6 +41,7 @@ from datetime import datetime
 from typing import Any, Callable, Sequence
 
 from rich.console import Group, RenderableType
+from rich.highlighter import Highlighter
 from rich.markdown import Markdown as RichMarkdown
 from rich.syntax import Syntax
 from rich.table import Table
@@ -56,6 +59,8 @@ from textual.widgets import Button, Footer, Input, Label, Static
 
 from config import (
     PALETTE_CLEAN_SLATE,
+    QUIET_WORDS,
+    TALK_WORDS,
     PALETTE_HOUSE_PARTY,
     PALETTE_STANDARD,
     PALETTE_VERONICA,
@@ -88,16 +93,16 @@ THEMES: dict[str, Theme] = {
     # Workshop default: arc-reactor cyan on near-black, with Stark gold for accents.
     PALETTE_STANDARD: Theme(
         name="jarvis-standard",
-        primary="#22d3ee",
-        secondary="#fbbf24",
-        accent="#38bdf8",
-        warning="#facc15",
-        error="#f87171",
-        success="#4ade80",
-        foreground="#dbeafe",
-        background="#05070d",
-        surface="#0b111f",
-        panel="#111a2e",
+        primary="#d97757",
+        secondary="#c2b8ab",
+        accent="#8fb8d8",
+        warning="#e0a458",
+        error="#e06c62",
+        success="#7fb069",
+        foreground="#e8e6e3",
+        background="#161513",
+        surface="#1c1b19",
+        panel="#232220",
         dark=True,
     ),
     # House Party: everything on, gold and amber, considerably louder.
@@ -173,9 +178,9 @@ class Ink:
 
 INKS: dict[str, Ink] = {
     PALETTE_STANDARD: Ink(
-        primary="#22d3ee", secondary="#fbbf24", accent="#38bdf8",
-        warning="#facc15", error="#f87171", success="#4ade80",
-        text="#dbeafe", soft="#a5b4c8", muted="#7c8aa0", faint="#4a5568",
+        primary="#d97757", secondary="#c2b8ab", accent="#8fb8d8",
+        warning="#e0a458", error="#e06c62", success="#7fb069",
+        text="#e8e6e3", soft="#b4b0aa", muted="#8a857e", faint="#54504a",
     ),
     PALETTE_HOUSE_PARTY: Ink(
         primary="#fbbf24", secondary="#fb923c", accent="#f97316",
@@ -212,6 +217,14 @@ STATE_STYLE: dict[str, tuple[str, str]] = {
     STATE_WORKING: ("WORKING", "warning"),
     STATE_SPEAKING: ("SPEAKING", "accent"),
 }
+
+#: The transcript's whole punctuation. ``BULLET`` opens anything J.A.R.V.I.S. did
+#: or said, ``BRANCH`` hangs a result underneath it, ``CARET`` marks what the
+#: operator typed, and ``SPARK`` is the system speaking as itself.
+BULLET = "\u23fa"      # ⏺
+BRANCH = "\u23bf"      # ⎿
+CARET = "\u203a"       # ›
+SPARK = "\u273b"       # ✻
 
 _BLOCKS = "▁▂▃▄▅▆▇█"
 _BAR_FULL = "█"
@@ -499,26 +512,274 @@ class Systems(Static):
 
 
 # ══════════════════════════════════════════════════════════════════════════════════════
+# Live keywords
+# ══════════════════════════════════════════════════════════════════════════════════════
+# A handful of bare words act the moment they are sent rather than going to the
+# model: `talk` opens the speaker, `quiet` shuts it. Nothing in the interface
+# said so, which made them folklore. Colouring them as they are typed turns the
+# feature into something you discover by using it -- and, just as usefully, tells
+# you *before* you press enter that this line is a switch and not a question.
+#
+# Longest phrases first, so "shut up" wins over a "shut" that is not there, and
+# whole words only, so "talkative" and "basement" stay ordinary prose.
+_KEYWORD_KIND: dict[str, str] = {
+    **{word: "talk" for word in TALK_WORDS},
+    **{word: "quiet" for word in QUIET_WORDS},
+}
+
+_KEYWORD_RE = re.compile(
+    r"(?<![\w'-])("
+    + "|".join(
+        re.escape(word)
+        for word in sorted(_KEYWORD_KIND, key=len, reverse=True)
+    )
+    + r")(?![\w'-])",
+    re.IGNORECASE,
+)
+
+
+def keyword_style(kind: str) -> str:
+    """One colour for "speak", another for "stop speaking". Never the same one."""
+    return f"bold {INK.success}" if kind == "talk" else f"bold {INK.accent}"
+
+
+class KeywordHighlighter(Highlighter):
+    """Colours the words that do something, wherever they appear.
+
+    Runs on every keystroke in the composer, so it is one compiled regex over a
+    line of text and nothing else.
+    """
+
+    def highlight(self, text: Text) -> None:
+        plain = text.plain
+        if not plain:
+            return
+        for match in _KEYWORD_RE.finditer(plain):
+            kind = _KEYWORD_KIND.get(match.group(1).lower())
+            if kind is None:
+                continue
+            text.stylize(keyword_style(kind), match.start(1), match.end(1))
+
+
+#: One instance is enough; it holds no state.
+KEYWORDS = KeywordHighlighter()
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════
+# The greeting, and the line that replaces it while he is working
+# ══════════════════════════════════════════════════════════════════════════════════════
+#: Openers for a session with nothing yet to say about the machine. Chosen by the
+#: hour rather than at random, so the greeting reads as observation rather than
+#: decoration.
+_OPENERS: dict[str, str] = {
+    "small_hours": "You are up late, {address}.",
+    "morning": "Good morning, {address}.",
+    "afternoon": "Good afternoon, {address}.",
+    "evening": "Good evening, {address}.",
+}
+
+#: Said underneath the greeting when the machine has nothing worth reporting.
+_PLEASANTRIES: tuple[str, ...] = (
+    "Everything is nominal. What shall we build?",
+    "All systems are yours. Where would you like to start?",
+    "The workshop is quiet. Say the word.",
+    "Standing by, and rather well rested.",
+    "Nothing is on fire. A promising beginning.",
+)
+
+#: What he calls the wait. Claude Code rotates a verb here and it turns a hang
+#: into a status; this set is his rather than theirs.
+_WORKING_VERBS: tuple[str, ...] = (
+    "Cogitating", "Calibrating", "Deliberating", "Triangulating", "Synthesising",
+    "Reasoning", "Computing", "Considering", "Correlating", "Compiling thought",
+)
+
+
+def _time_of_day(now: datetime | None = None) -> str:
+    hour = (now or datetime.now()).hour
+    if hour < 5:
+        return "small_hours"
+    if hour < 12:
+        return "morning"
+    if hour < 18:
+        return "afternoon"
+    return "evening"
+
+
+def _address() -> str:
+    """How to open. A name if he has been given one, the honorific otherwise."""
+    return (settings.USER_NAME or settings.USER_TITLE).strip() or "Sir"
+
+
+class Greeting(Static):
+    """The centred opening, in the manner of the Claude app.
+
+    It reads the machine before it speaks. A greeting that says "everything is
+    nominal" while the battery is at eleven percent is worse than no greeting at
+    all, so the second line is drawn from whatever is actually true — a dying
+    battery, a full disk, an unreachable daemon — and falls back to pleasantry
+    only when there is genuinely nothing to report.
+    """
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__("", **kwargs)
+        self.telemetry: Any = None
+        self.model_ready: bool | None = None
+        self.warm = False
+        self._pleasantry = random.choice(_PLEASANTRIES)
+
+    def observe(
+        self,
+        telemetry: Any = None,
+        model_ready: bool | None = None,
+        warm: bool | None = None,
+    ) -> None:
+        """Fold in whatever the boot sequence has learned so far."""
+        if telemetry is not None:
+            self.telemetry = telemetry
+        if model_ready is not None:
+            self.model_ready = model_ready
+        if warm is not None:
+            self.warm = warm
+        self.refresh(layout=True)
+
+    # -- the second line ---------------------------------------------------------------
+    def _observation(self) -> tuple[str, str] | None:
+        """The most worth saying, or None when nothing is."""
+        if self.model_ready is False:
+            return (
+                f"I cannot reach the reasoning core. `ollama serve` will fix it.",
+                INK.warning,
+            )
+
+        telemetry = self.telemetry
+        if telemetry is not None:
+            battery = getattr(telemetry, "battery_percent", None)
+            plugged = getattr(telemetry, "battery_plugged", None)
+            if isinstance(battery, (int, float)) and battery <= 25 and plugged is False:
+                return (f"Battery is at {battery:.0f}%. Worth finding a cable.", INK.warning)
+
+            disks = getattr(telemetry, "disks", None) or []
+            worst = max(
+                (getattr(d, "percent", 0) or 0 for d in disks), default=0
+            )
+            if worst >= 90:
+                return (
+                    f"A filesystem is at {worst:.0f}%. Say the word and I will clear the caches.",
+                    INK.warning,
+                )
+
+            ram = getattr(telemetry, "ram_percent", None)
+            if isinstance(ram, (int, float)) and ram >= 88:
+                return (f"Memory is at {ram:.0f}%. Something is being greedy.", INK.warning)
+
+            cpu = getattr(telemetry, "cpu_percent", None)
+            if isinstance(cpu, (int, float)) and cpu >= 85:
+                return (f"Something is working the processor hard — {cpu:.0f}%.", INK.muted)
+
+        if self.warm:
+            return (f"{settings.MODEL_NAME} is warm and standing by.", INK.muted)
+        return None
+
+    def render(self) -> RenderableType:
+        opener = _OPENERS[_time_of_day()].format(address=_address())
+        observation = self._observation()
+        line, tone = observation if observation else (self._pleasantry, INK.muted)
+
+        body = Text(justify="center")
+        body.append(f"{SPARK}\n\n", style=INK.primary)
+        body.append(f"{opener}\n", style=f"bold {INK.text}")
+        body.append(f"{line}\n\n", style=tone)
+        body.append("/help for commands", style=INK.faint)
+        body.append("   ·   ", style=INK.faint)
+        body.append("? for shortcuts", style=INK.faint)
+        return body
+
+
+class StatusLine(Static):
+    """What he is doing, while he is doing it.
+
+    A terminal that shows nothing for eight seconds looks broken. This shows the
+    verb, the elapsed time, how much has come back so far, and how to stop it.
+    """
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__("", **kwargs)
+        self.state = STATE_IDLE
+        self.detail = ""
+        self.started: float | None = None
+        self.tokens = 0
+        self.verb = _WORKING_VERBS[0]
+        self._tick = 0
+
+    def begin(self) -> None:
+        """A turn has started: new verb, new clock."""
+        self.started = time.monotonic()
+        self.tokens = 0
+        self.verb = random.choice(_WORKING_VERBS)
+
+    def end(self) -> None:
+        self.started = None
+        self.tokens = 0
+        self.update("")
+
+    def advance(self) -> None:
+        self._tick += 1
+        if self.started is not None:
+            self.update(self._build())
+
+    def _build(self) -> RenderableType:
+        elapsed = time.monotonic() - (self.started or time.monotonic())
+        spark = SPARK if self._tick % 2 else "\u2739"
+        label = self.detail or self.verb
+
+        line = Text()
+        line.append(f"{spark} ", style=INK.primary)
+        line.append(f"{label}… ", style=INK.soft)
+        line.append("(", style=INK.faint)
+        line.append(f"{elapsed:.0f}s", style=INK.muted)
+        if self.tokens:
+            line.append(" · ", style=INK.faint)
+            line.append(f"↓ {_compact_count(self.tokens)} tokens", style=INK.muted)
+        line.append(" · ", style=INK.faint)
+        line.append("esc to interrupt", style=INK.faint)
+        line.append(")", style=INK.faint)
+        return line
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════
 # Transcript entries
 # ══════════════════════════════════════════════════════════════════════════════════════
 class Entry(Static):
-    """Base class for anything that lands in the transcript."""
+    """Base class for anything that lands in the transcript.
+
+    Keeps a handle on whatever it was last drawn from. Textual name-mangles its
+    own copy, and a transcript you cannot read back is a transcript you cannot
+    test, copy out, or export.
+    """
 
     def __init__(self, renderable: RenderableType = "", **kwargs: Any) -> None:
         super().__init__(renderable, **kwargs)
+        self.source: RenderableType = renderable
+
+    def update(self, content: RenderableType = "", **kwargs: Any) -> None:
+        self.source = content
+        super().update(content, **kwargs)
 
 
 class UserEntry(Entry):
-    """What the operator said, with the time they said it."""
+    """What the operator said, echoed back the way they typed it."""
 
     def __init__(self, text: str, spoken: bool = False) -> None:
-        stamp = datetime.now().strftime("%H:%M")
         body = Text()
-        body.append(f"{settings.USER_TITLE} ", style=f"bold {INK.secondary}")
+        body.append(f"{CARET} ", style=INK.muted)
         if spoken:
             body.append("🎙 ", style=INK.success)
-        body.append(f"· {stamp}\n", style=INK.faint)
-        body.append(text, style=INK.text)
+        # Highlighted here too: seeing the word still lit in the transcript is
+        # what explains why he stopped talking three lines later.
+        said = Text(text, style=INK.soft)
+        KEYWORDS.highlight(said)
+        body.append_text(said)
         super().__init__(body, classes="entry user")
 
 
@@ -533,7 +794,6 @@ class AgentEntry(Entry):
 
     def __init__(self, text: str = "", streaming: bool = False) -> None:
         super().__init__("", classes="entry agent")
-        self.border_title = settings.AGENT_NAME
         self._text = text
         self._streaming = streaming
         self.rerender()
@@ -548,10 +808,17 @@ class AgentEntry(Entry):
         self.rerender()
 
     def rerender(self) -> None:
+        """Bullet, then the reply, in the transcript's own punctuation.
+
+        The bullet sits in its own column and the prose is indented to clear it,
+        which is what makes a long answer scannable next to the tool calls that
+        produced it.
+        """
         body = self._text
         if not body.strip():
-            self.update(Text("▍", style=INK.primary))
-            return
+            bullet = Text(f"{BULLET} ", style=INK.primary)
+            bullet.append("▍", style=INK.primary)
+            return self.update(bullet)
         try:
             rendered: RenderableType = RichMarkdown(
                 body + ("▍" if self._streaming else ""),
@@ -560,28 +827,34 @@ class AgentEntry(Entry):
             )
         except Exception:
             rendered = Text(body)
-        self.update(rendered)
+        # A two-column grid rather than a stack: the bullet sits on the reply's
+        # first line and every line after it is indented clear of the gutter.
+        layout = Table.grid(padding=(0, 0))
+        layout.add_column(width=2, vertical="top")
+        layout.add_column(ratio=1, overflow="fold")
+        layout.add_row(Text(BULLET, style=INK.primary), rendered)
+        self.update(layout)
 
 
 class SystemEntry(Entry):
     """A line from the application rather than from either party."""
 
     _MARKS = {
-        "info": ("›", "primary"),
-        "success": ("✓", "success"),
-        "warn": ("!", "warning"),
-        "warning": ("!", "warning"),
-        "error": ("×", "error"),
+        "info": (SPARK, "muted"),
+        "success": (SPARK, "success"),
+        "warn": (SPARK, "warning"),
+        "warning": (SPARK, "warning"),
+        "error": (SPARK, "error"),
     }
 
     def __init__(self, text: str, level: str = "info") -> None:
-        mark, colour = self._MARKS.get(str(level).lower(), ("›", "primary"))
+        mark, colour = self._MARKS.get(str(level).lower(), (SPARK, "muted"))
         colour = ink(colour)
         body = Text()
-        body.append(f"{mark} ", style=f"bold {colour}")
+        body.append(f"{mark} ", style=colour)
         body.append(
             text,
-            style=colour if level in {"error", "warn", "warning"} else INK.soft,
+            style=colour if level in {"error", "warn", "warning"} else INK.muted,
         )
         super().__init__(body, classes="entry system")
 
@@ -590,15 +863,20 @@ class InterimEntry(Entry):
     """Narration that arrived alongside a tool call — a remark, not an answer."""
 
     def __init__(self, text: str) -> None:
-        super().__init__(Text(text, style=f"italic {INK.muted}"), classes="entry interim")
+        body = Text()
+        body.append(f"{BULLET} ", style=INK.faint)
+        body.append(text, style=f"italic {INK.muted}")
+        super().__init__(body, classes="entry interim")
 
 
 class ThoughtEntry(Entry):
     """The model's private reasoning, when the thinking channel is switched on."""
 
     def __init__(self, text: str) -> None:
-        super().__init__(Text(text, style=f"italic {INK.muted}"), classes="entry thought")
-        self.border_title = "reasoning"
+        body = Text()
+        body.append(f"{BRANCH}  ", style=INK.faint)
+        body.append(text, style=f"italic {INK.faint}")
+        super().__init__(body, classes="entry thought")
 
 
 class ToolEntry(Entry):
@@ -642,29 +920,32 @@ class ToolEntry(Entry):
         self.update(self._build())
 
     def _build(self) -> RenderableType:
+        """``⏺ tool(args)`` with its reading hanging underneath on a ``⎿``."""
         if self.ok is None:
             mark = self.SPINNER[self._tick % len(self.SPINNER)]
             colour = INK.accent
         else:
-            mark = "✓" if self.ok else "×"
+            mark = BULLET
             colour = INK.success if self.ok else INK.error
 
         head = Text()
-        head.append(f"{mark} ", style=f"bold {colour}")
-        head.append(self.tool_name, style=f"bold {INK.accent}")
-        if self.arguments:
-            head.append(f"({self.arguments})", style=INK.muted)
+        head.append(f"{mark} ", style=colour)
+        head.append(self.tool_name, style=f"bold {INK.text}")
+        head.append(f"({self.arguments})", style=INK.muted)
         if self.ok is None:
-            head.append(f"  {time.monotonic() - self.started:.1f}s",
-                        style=INK.faint)
+            head.append(f"  {time.monotonic() - self.started:.0f}s", style=INK.faint)
         else:
             head.append(f"  {self.duration:.2f}s", style=INK.faint)
 
         if not self.result:
             return head
-        preview = _one_line(self.result, 400)
-        body = Text(f"  {preview}", style=INK.muted)
-        return Group(head, body)
+        reading = Text()
+        reading.append(f"  {BRANCH}  ", style=INK.faint)
+        reading.append(
+            _one_line(self.result, 400),
+            style=INK.error if self.ok is False else INK.muted,
+        )
+        return Group(head, reading)
 
 
 class AlertEntry(Entry):
@@ -677,12 +958,14 @@ class AlertEntry(Entry):
         message = str(getattr(alert, "message", alert))
         suggestion = str(getattr(alert, "suggestion", "") or "")
 
-        body = Text(message, style=INK.text)
+        body = Text()
+        body.append(f"{BULLET} ", style=colour)
+        body.append(f"{title}  ", style=f"bold {colour}")
+        body.append(message, style=INK.text)
         if suggestion:
-            body.append(f"\n{suggestion}", style=INK.muted)
+            body.append(f"\n  {BRANCH}  ", style=INK.faint)
+            body.append(suggestion, style=INK.muted)
         super().__init__(body, classes=f"entry alert {severity}")
-        self.border_title = f"⚠ {title}"
-        self.styles.border_title_color = colour
 
 
 class TableEntry(Entry):
@@ -701,7 +984,8 @@ class TableEntry(Entry):
             table.add_column(str(column), overflow="fold")
         for row in rows:
             table.add_row(*[Text(str(cell)) for cell in row])
-        super().__init__(table, classes="entry table")
+        super().__init__(Group(Text(f"{BULLET} ", style=INK.primary), table),
+                         classes="entry table")
 
 
 class CodeEntry(Entry):
@@ -716,7 +1000,7 @@ class CodeEntry(Entry):
         except Exception:
             body = Text(str(code))
         super().__init__(body, classes="entry code")
-        self.border_title = title or language
+        self.border_title = title or language or "source"
 
 
 # ══════════════════════════════════════════════════════════════════════════════════════
@@ -859,17 +1143,29 @@ class HelpScreen(ModalScreen[None]):
         keys.add_column()
         for key, meaning in (
             ("enter", "send"),
-            ("ctrl+c", "interrupt the turn in progress"),
+            ("esc", "interrupt the turn in progress"),
+            ("ctrl+c", "interrupt; at an idle prompt, leave"),
             ("ctrl+d", "leave"),
             ("ctrl+l", "clear the transcript"),
             ("ctrl+s", "speech on / off"),
-            ("ctrl+b", "show or hide the instrument panel"),
+            ("ctrl+b", "the instrument panel: vitals, latency, systems"),
             ("ctrl+r", "show or hide reasoning"),
             ("ctrl+p", "command palette"),
             ("↑ / ↓", "walk back through what you have asked"),
             ("f1 / ?", "this"),
         ):
             keys.add_row(key, meaning)
+
+        words = Text()
+        words.append("talk", style=keyword_style("talk"))
+        words.append(" and ", style=INK.muted)
+        words.append("quiet", style=keyword_style("quiet"))
+        words.append(
+            " act the moment you send them, with no slash. Every alias is lit as\n"
+            "you type it — shut up, chup kar, bolo — so you can see it before you\n"
+            "press enter.",
+            style=INK.muted,
+        )
 
         commands = Table.grid(padding=(0, 3))
         commands.add_column(style=f"bold {INK.accent}", justify="right", width=12)
@@ -889,7 +1185,9 @@ class HelpScreen(ModalScreen[None]):
         with Vertical(id="dialog", classes="modal help"):
             yield Static(Text("Keys", style=f"bold {INK.primary}"))
             yield Static(keys, classes="modal-detail")
-            yield Static(Text("\nCommands", style=f"bold {INK.primary}"))
+            yield Static(Text("Words", style=f"bold {INK.primary}"))
+            yield Static(words, classes="modal-detail")
+            yield Static(Text("Commands", style=f"bold {INK.primary}"))
             yield Static(commands, classes="modal-detail")
             yield Label("esc to close", classes="modal-hint")
 
@@ -915,31 +1213,45 @@ class JarvisTUI(App):
     CSS = """
     Screen { background: $background; }
 
+    /* The name, and the model behind it, on one line at the top. */
+    #masthead {
+        height: 2;
+        padding: 0 2;
+        color: $primary;
+        border-bottom: hkey $primary 25%;
+    }
+
     #shell { height: 1fr; }
 
-    #masthead {
-        height: 1;
-        background: $panel;
-        color: $primary;
-        padding: 0 1;
+    /* Nothing said yet: the greeting has the window to itself. */
+    #greeting {
+        width: 1fr;
+        height: 1fr;
+        content-align: center middle;
+        text-align: center;
     }
+    #greeting.hidden { display: none; }
 
     #transcript {
         width: 1fr;
-        padding: 0 2 1 2;
+        height: 1fr;
+        padding: 1 2 0 2;
         scrollbar-size-vertical: 1;
     }
+    #transcript.hidden { display: none; }
 
+    /* Kept, but out of the way: Claude Code has no sidebar, so neither has this
+       until ctrl+b asks for one. */
     #sidebar {
-        width: 36;
+        width: 34;
         background: $surface;
-        border-left: vkey $primary 40%;
+        border-left: vkey $primary 30%;
         padding: 0 1;
+        display: none;
     }
-    #sidebar.hidden { display: none; }
-
+    #sidebar.shown { display: block; }
     #sidebar > Static {
-        border: round $primary 35%;
+        border: round $primary 30%;
         border-title-color: $secondary;
         border-title-style: bold;
         padding: 0 1;
@@ -949,59 +1261,53 @@ class JarvisTUI(App):
     #reactor { content-align: center middle; }
 
     .entry { height: auto; margin: 0 0 1 0; }
-    .entry.user {
-        padding: 0 0 0 1;
-        border-left: thick $secondary;
-    }
-    .entry.agent {
-        border-left: thick $primary;
-        border-title-color: $primary;
-        border-title-style: bold;
-        padding: 0 0 0 1;
-    }
-    .entry.system { color: $foreground 80%; margin: 0 0 1 0; }
-    .entry.interim { padding: 0 0 0 3; }
-    .entry.thought {
-        border: round $foreground 25%;
-        border-title-color: $foreground 45%;
-        padding: 0 1;
-    }
-    .entry.tool { padding: 0 0 0 2; }
-    .entry.alert {
-        border: round $warning;
-        border-title-style: bold;
-        padding: 0 1;
-    }
-    .entry.alert.critical { border: round $error; }
+    .entry.agent { padding: 0 0 0 0; }
+    .entry.user { color: $foreground 70%; }
+    .entry.interim { padding: 0 0 0 2; }
+    .entry.thought { padding: 0 0 0 2; }
+    .entry.tool { padding: 0 0 0 0; }
+    .entry.alert { padding: 0 0 0 0; }
+    .entry.table { padding: 0 0 0 0; }
     .entry.code {
-        border: round $foreground 30%;
+        border: round $foreground 25%;
         border-title-color: $accent;
         padding: 0 1;
+        margin: 0 0 1 2;
     }
-    .entry.table { padding: 0 0 0 1; }
 
-    #composer {
+    /* The composer: a rounded box the width of the terminal, exactly where the
+       eye already is. */
+    #footer { height: auto; }
+    #status {
         height: auto;
-        background: $panel;
-        border-top: hkey $primary 40%;
+        min-height: 0;
+        padding: 0 3;
     }
-    #prompt-label {
-        width: auto;
-        padding: 1 1 1 2;
-        color: $secondary;
+    #composer {
+        height: 3;
+        border: round $primary 45%;
+        margin: 0 1;
+        background: $surface;
+    }
+    #composer.busy { border: round $primary 80%; }
+    #prompt-caret {
+        width: 3;
+        height: 1;
+        padding: 0 0 0 1;
+        color: $primary;
         text-style: bold;
     }
     #prompt {
+        height: 1;
         border: none;
-        background: $panel;
-        padding: 1 1;
+        background: $surface;
+        padding: 0 1 0 0;
     }
-    #prompt:focus { border: none; background: $panel; }
-    #status-chip {
-        width: auto;
-        padding: 1 2 1 1;
-        color: $primary;
-        text-style: bold;
+    #prompt:focus { border: none; background: $surface; }
+    #hints {
+        height: 1;
+        padding: 0 3;
+        color: $foreground 40%;
     }
 
     .modal {
@@ -1026,11 +1332,14 @@ class JarvisTUI(App):
     """
 
     BINDINGS = [
-        Binding("ctrl+c", "interrupt", "Interrupt", priority=True, show=True),
+        # Deliberately not a priority binding: a modal's own escape has to win,
+        # or a permission dialog cannot be dismissed without cancelling the turn.
+        Binding("escape", "interrupt", "Interrupt", show=True),
+        Binding("ctrl+c", "interrupt", "Interrupt", priority=True, show=False),
         Binding("ctrl+d", "leave", "Quit", priority=True),
         Binding("ctrl+l", "clear", "Clear"),
         Binding("ctrl+s", "toggle_speech", "Speech"),
-        Binding("ctrl+b", "toggle_sidebar", "Panel"),
+        Binding("ctrl+b", "toggle_sidebar", "Instruments"),
         Binding("ctrl+r", "toggle_reasoning", "Reasoning"),
         Binding("f1", "help", "Help"),
         Binding("question_mark", "help", "Help", show=False),
@@ -1082,36 +1391,35 @@ class JarvisTUI(App):
         # True once the operator has expressed an opinion about the sidebar, after
         # which resizing the window stops having one.
         self._sidebar_pinned = False
+        self._protocol: str | None = None
+        self._model_status = settings.MODEL_NAME
+        self._voice_status = ""
+        self._stream_tokens = 0
+        self._turn_active = False
 
     # -- composition -----------------------------------------------------------------
     def compose(self) -> ComposeResult:
         yield Static(self._masthead_text(), id="masthead")
         with Horizontal(id="shell"):
-            yield VerticalScroll(id="transcript")
+            with Vertical(id="body"):
+                yield Greeting(id="greeting")
+                yield VerticalScroll(id="transcript", classes="hidden")
             with Vertical(id="sidebar"):
                 yield Reactor(id="reactor")
                 yield Vitals(id="vitals")
                 yield TurnMeter(id="meter")
                 yield Systems(id="systems")
-        with Horizontal(id="composer"):
-            yield Label(f"{settings.USER_TITLE} ›", id="prompt-label")
-            yield Input(
-                placeholder="ask me anything — /help for commands",
-                id="prompt",
-                suggester=SuggestFromList(_SLASH_COMMANDS, case_sensitive=False),
-            )
-            yield Label("READY", id="status-chip")
-        yield Footer()
-
-    def on_resize(self, event: Any = None) -> None:
-        """Below roughly ninety columns the sidebar costs more than it tells."""
-        if self._sidebar_pinned:
-            return
-        try:
-            sidebar = self.query_one("#sidebar")
-        except Exception:
-            return
-        sidebar.set_class(self.size.width < 92, "hidden")
+        with Vertical(id="footer"):
+            yield StatusLine(id="status")
+            with Horizontal(id="composer"):
+                yield Label(CARET, id="prompt-caret")
+                yield Input(
+                    placeholder="ask me anything",
+                    id="prompt",
+                    highlighter=KEYWORDS,
+                    suggester=SuggestFromList(_SLASH_COMMANDS, case_sensitive=False),
+                )
+            yield Static(self._hint_text(), id="hints")
 
     def on_mount(self) -> None:
         for theme in THEMES.values():
@@ -1125,11 +1433,7 @@ class JarvisTUI(App):
         systems.border_title = "systems"
         systems.tools = self._tool_names
 
-        if not settings.HUD_SHOW_TELEMETRY:
-            self.query_one("#sidebar").add_class("hidden")
-
         self.query_one("#prompt", Input).focus()
-        self._print_banner()
 
         # The pump. One timer, one drain, every frame — rather than one callback
         # per token arriving from the model's thread.
@@ -1174,6 +1478,12 @@ class JarvisTUI(App):
         # Animate at a third of the frame rate: fast enough to read as motion,
         # cheap enough to be free.
         if self._frame % 3 == 0:
+            try:
+                status = self.query_one("#status", StatusLine)
+                status.tokens = self._stream_tokens
+                status.advance()
+            except Exception:
+                pass
             try:
                 self.query_one("#reactor", Reactor).advance()
             except Exception:
@@ -1224,7 +1534,16 @@ class JarvisTUI(App):
             logger.debug("Could not queue HUD event %s", kind, exc_info=True)
 
     # -- transcript plumbing ---------------------------------------------------------
+    def _reveal_transcript(self) -> None:
+        """Trade the greeting for the transcript, once there is one."""
+        greeting = self.query_one("#greeting", Greeting)
+        if greeting.has_class("hidden"):
+            return
+        greeting.add_class("hidden")
+        self.query_one("#transcript", VerticalScroll).remove_class("hidden")
+
     def _mount_entry(self, widget: Entry) -> None:
+        self._reveal_transcript()
         transcript = self.query_one("#transcript", VerticalScroll)
         at_end = transcript.is_vertical_scroll_end
         transcript.mount(widget)
@@ -1249,23 +1568,38 @@ class JarvisTUI(App):
             pass
 
     def _masthead_text(self) -> Text:
+        """``✻ J.A.R.V.I.S.`` on the left, whatever is answering on the right."""
         text = Text()
-        text.append(f" {settings.AGENT_NAME} ", style=f"bold {INK.primary}")
-        text.append("· ", style=INK.faint)
-        text.append(settings.AGENT_FULL_NAME, style=INK.muted)
+        text.append(f"{SPARK} ", style=INK.primary)
+        text.append(settings.AGENT_NAME, style=f"bold {INK.text}")
+        if self._protocol:
+            text.append(f"   {self._protocol.upper()}", style=f"bold {INK.secondary}")
+        text.append("   ", style=INK.faint)
+        text.append(self._model_status, style=INK.faint)
         return text
 
-    def _print_banner(self) -> None:
-        width = shutil.get_terminal_size((100, 30)).columns
-        banner = _BANNER if width >= 62 else _BANNER_NARROW
-        body = Text(banner, style=f"bold {INK.primary}")
-        body.append(
-            f"\n{settings.AGENT_FULL_NAME}\n", style=INK.muted
-        )
-        body.append("f1 for help  ·  ctrl+c interrupts  ·  ctrl+d leaves",
-                    style=INK.faint)
-        entry = Entry(body, classes="entry banner")
-        self.query_one("#transcript", VerticalScroll).mount(entry)
+    def _hint_text(self) -> Text:
+        text = Text()
+        text.append("? for shortcuts", style=INK.faint)
+        text.append("   ·   ", style=INK.faint)
+        text.append("/ for commands", style=INK.faint)
+        text.append("   ·   ", style=INK.faint)
+        text.append("talk", style=keyword_style("talk"))
+        text.append(" / ", style=INK.faint)
+        text.append("quiet", style=keyword_style("quiet"))
+        text.append(" for speech", style=INK.faint)
+        if self._voice_status and "off" not in self._voice_status:
+            text.append("   ·   ", style=INK.faint)
+            text.append(self._voice_status, style=INK.faint)
+        return text
+
+    def _refresh_chrome(self) -> None:
+        """Redraw the two one-line strips that frame everything else."""
+        try:
+            self.query_one("#masthead", Static).update(self._masthead_text())
+            self.query_one("#hints", Static).update(self._hint_text())
+        except Exception:
+            logger.debug("chrome refresh failed", exc_info=True)
 
     # ══════════════════════════════════════════════════════════════════════════════════
     # The StarkHUD interface. Every method below is safe to call from any thread.
@@ -1314,15 +1648,29 @@ class JarvisTUI(App):
             widget.refresh()
 
     def set_state(self, state: str, detail: str = "") -> None:
+        # Ordered against stream_token, which also runs on the caller's thread.
+        if state == STATE_IDLE:
+            self._turn_active = False
+        elif not self._turn_active:
+            self._turn_active = True
+            self._stream_tokens = 0
         self._post("state", state, detail)
 
     def _do_state(self, state: str, detail: str) -> None:
         self.state = state
-        label, colour = STATE_STYLE.get(state, ("READY", "primary"))
-        colour = ink(colour)
-        chip = self.query_one("#status-chip", Label)
-        chip.update(Text(f"{label}{(' ' + detail) if detail else ''}", style=f"bold {colour}"))
         self.query_one("#reactor", Reactor).state = state
+
+        status = self.query_one("#status", StatusLine)
+        status.state = state
+        status.detail = detail
+        composer = self.query_one("#composer")
+        if state == STATE_IDLE:
+            status.end()
+            composer.remove_class("busy")
+        else:
+            if status.started is None:
+                status.begin()
+            composer.add_class("busy")
 
     def set_amplitude(self, value: float) -> None:
         # Written directly rather than queued: this arrives from an audio callback
@@ -1346,6 +1694,11 @@ class JarvisTUI(App):
 
     def _do_telemetry(self, telemetry: Any) -> None:
         self.query_one("#vitals", Vitals).update_telemetry(telemetry)
+        # The greeting reads the machine before it speaks, so it wants this too --
+        # but only while it is still the thing on screen.
+        greeting = self.query_one("#greeting", Greeting)
+        if not greeting.has_class("hidden"):
+            greeting.observe(telemetry=telemetry)
 
     def set_metrics(self, metrics: Any) -> None:
         """Latency measurements from the engine, shown in the sidebar."""
@@ -1358,25 +1711,45 @@ class JarvisTUI(App):
         self._post("protocol", name)
 
     def _do_protocol(self, name: str | None) -> None:
+        self._protocol = name
         systems = self.query_one("#systems", Systems)
         systems.protocol = name
         systems.refresh(layout=True)
+        self._refresh_chrome()
 
     def set_voice_status(self, text: str) -> None:
         self._post("voice_status", str(text))
 
     def _do_voice_status(self, text: str) -> None:
+        self._voice_status = text
         systems = self.query_one("#systems", Systems)
         systems.voice_status = text
         systems.refresh(layout=True)
+        self._refresh_chrome()
 
     def set_model_status(self, text: str) -> None:
         self._post("model_status", str(text))
 
     def _do_model_status(self, text: str) -> None:
+        self._model_status = text
         systems = self.query_one("#systems", Systems)
         systems.model_status = text
         systems.refresh(layout=True)
+        self._refresh_chrome()
+
+    def set_model_ready(self, ready: bool) -> None:
+        """Preflight's verdict. The greeting says so rather than pretending."""
+        self._post("model_ready", bool(ready))
+
+    def _do_model_ready(self, ready: bool) -> None:
+        self.query_one("#greeting", Greeting).observe(model_ready=ready)
+
+    def set_warm(self, warm: bool = True) -> None:
+        """The model is loaded and pinned; the first question will be quick."""
+        self._post("warm", bool(warm))
+
+    def _do_warm(self, warm: bool) -> None:
+        self.query_one("#greeting", Greeting).observe(warm=warm)
 
     def set_tools(self, names: Sequence[str]) -> None:
         self._post("tools", list(names))
@@ -1497,6 +1870,8 @@ class JarvisTUI(App):
         self._running_tools.clear()
         self._pending_tools.clear()
         self._live_entry = None
+        self.query_one("#transcript", VerticalScroll).add_class("hidden")
+        self.query_one("#greeting", Greeting).remove_class("hidden")
 
     # -- streaming -------------------------------------------------------------------
     def stream_begin(self) -> None:
@@ -1524,6 +1899,7 @@ class JarvisTUI(App):
                 return
             self._stream_parts.append(token)
             self._stream_dirty = True
+            self._stream_tokens += 1
 
     def stream_end(self, final_text: str | None = None, interim: bool = False) -> None:
         with self._stream_lock:
@@ -1661,9 +2037,13 @@ class JarvisTUI(App):
         self._do_clear()
 
     def action_toggle_sidebar(self) -> None:
-        """Show or hide the instruments, and stop resizing from overruling it."""
+        """Bring the instrument panel in, or send it away again.
+
+        Claude Code has no sidebar, so neither has this until it is asked for.
+        The vitals and the latency meter are still live behind it.
+        """
         self._sidebar_pinned = True
-        self.query_one("#sidebar").toggle_class("hidden")
+        self.query_one("#sidebar").toggle_class("shown")
 
     def action_toggle_reasoning(self) -> None:
         self._show_reasoning = not self._show_reasoning
@@ -1718,20 +2098,20 @@ class JarvisTUI(App):
         self._post("prompt_label")
 
     def _do_prompt_label(self) -> None:
-        self.query_one("#prompt-label", Label).update(f"{settings.USER_TITLE} ›")
+        # The composer keeps Claude Code's bare caret; it is the greeting that
+        # learns the operator's name.
+        self.query_one("#greeting", Greeting).refresh(layout=True)
+        self._refresh_chrome()
 
 
 # ══════════════════════════════════════════════════════════════════════════════════════
 # Small helpers
 # ══════════════════════════════════════════════════════════════════════════════════════
-_BANNER = r"""     ██╗ █████╗ ██████╗ ██╗   ██╗██╗███████╗
-     ██║██╔══██╗██╔══██╗██║   ██║██║██╔════╝
-     ██║███████║██████╔╝██║   ██║██║███████╗
-██   ██║██╔══██║██╔══██╗╚██╗ ██╔╝██║╚════██║
-╚█████╔╝██║  ██║██║  ██║ ╚████╔╝ ██║███████║
- ╚════╝ ╚═╝  ╚═╝╚═╝  ╚═╝  ╚═══╝  ╚═╝╚══════╝"""
-
-_BANNER_NARROW = "J.A.R.V.I.S."
+def _compact_count(value: int) -> str:
+    """1400 becomes 1.4k; the exact figure is never the interesting part."""
+    if value < 1000:
+        return str(value)
+    return f"{value / 1000:.1f}k"
 
 
 def _one_line(text: Any, limit: int) -> str:
