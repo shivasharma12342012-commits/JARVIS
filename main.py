@@ -432,6 +432,8 @@ class JarvisApplication:
         self._listening = False
         self._exit_code = 0
         self._consumer: threading.Thread | None = None
+        #: Why the full-screen HUD was declined, when it was and it is worth saying.
+        self._tui_declined = ""
 
     # -- construction ------------------------------------------------------------------
     def build_frontend(self) -> None:
@@ -453,7 +455,11 @@ class JarvisApplication:
             LOG.info("front end: full-screen HUD")
         else:
             self.hud = StarkHUD(palette=PALETTE_STANDARD, enabled=settings.HUD_ENABLED)
-            LOG.info("front end: pinned status strip")
+            self._tui_declined = self.tui_verdict()[1]
+            LOG.info(
+                "front end: pinned status strip%s",
+                f" ({self._tui_declined})" if self._tui_declined else "",
+            )
         if settings.voice_wanted:
             self.voice = VoiceSystem(
                 on_wake=self._on_wake,
@@ -815,31 +821,55 @@ class JarvisApplication:
                 self._log_system("No microphone available - text input only.", "warn")
             self._refresh_voice_status()
 
+        if self._tui_declined:
+            self._log_system(self._tui_declined, "warn")
+
         self._log_system("Type /help for the command set.", "info")
 
 
     # ==================================================================================
     # The full-screen front end
     # ==================================================================================
-    def tui_wanted(self) -> bool:
-        """Decide which front end this invocation should get.
+    def tui_verdict(self) -> tuple[bool, str]:
+        """Which front end this invocation gets, and — when it is not the
+        full-screen one — why not, in words the operator can act on.
 
-        The full-screen HUD needs a real terminal to take over. Piped output, a
-        one-shot ``--ask``, ``--check`` and ``--no-hud`` all want plain lines they
-        can capture, and ``--classic`` is the operator saying so outright.
+        Falling back silently is worse than not falling back at all: the display
+        simply is not the one you were promised and nothing on screen says so.
+        Every refusal below therefore carries its own explanation, and
+        :meth:`build_frontend` prints the surprising ones.
         """
-        if getattr(self.args, "classic", False) or self.args.no_hud:
-            return False
+        # Deliberately quiet: these modes are pipe-friendly by design and the
+        # operator asked for them by name.
         if self.args.ask or self.args.check or self.args.list_mics:
-            return False
+            return False, ""
+        if getattr(self.args, "classic", False):
+            return False, ""
+
+        if self.args.no_hud:
+            return False, "--no-hud was passed, so the display is plain lines."
         if not settings.HUD_ENABLED:
-            return False
+            return False, "HUD_ENABLED is false in your .env, so the display is plain lines."
         if JarvisTUI is None or not tui_available():
-            return False
+            return False, (
+                "textual is not installed, so I am on the classic display. "
+                "Install it with:  pip install -r requirements.txt"
+            )
         try:
-            return bool(sys.stdout.isatty() and sys.stdin is not None and sys.stdin.isatty())
+            interactive = bool(
+                sys.stdout.isatty() and sys.stdin is not None and sys.stdin.isatty()
+            )
         except Exception:
-            return False
+            interactive = False
+        if not interactive:
+            return False, (
+                "this is not an interactive terminal, so I am on the classic display."
+            )
+        return True, ""
+
+    def tui_wanted(self) -> bool:
+        """True when the full-screen HUD should own the terminal."""
+        return self.tui_verdict()[0]
 
     def _tui_boot(self) -> None:
         """Everything ``run`` does for the classic front end, but on screen.
