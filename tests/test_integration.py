@@ -115,3 +115,53 @@ def test_the_synchronous_core_can_still_be_asked_for():
     app.build_frontend()
     app.wire_backend()
     assert type(app.agent).__name__ == "JarvisAgent"
+
+
+def test_falling_back_to_the_classic_display_always_says_why():
+    """A display that is silently not the one you were promised is the bug."""
+    import jarvis.tui as tui_mod
+
+    cases = {
+        "--no-hud": "--no-hud",
+        "--classic": "",          # asked for by name: nothing to explain
+        "--check": "",            # pipe-friendly by design
+        "--ask": "",
+    }
+    for flag, expected in cases.items():
+        argv = ["--text", flag] + (["hello"] if flag == "--ask" else [])
+        args = jmain.parse_args(argv)
+        jmain.apply_overrides(args)
+        app = jmain.JarvisApplication(args)
+        used, why = app.tui_verdict()
+        assert used is False, flag
+        if expected:
+            assert expected in why, (flag, why)
+        else:
+            assert why == "", (flag, why)
+
+
+def test_a_missing_textual_names_the_command_that_fixes_it(monkeypatch):
+    monkeypatch.setattr(jmain, "JarvisTUI", None)
+    args = jmain.parse_args(["--text"])
+    jmain.apply_overrides(args)
+    app = jmain.JarvisApplication(args)
+    used, why = app.tui_verdict()
+    assert used is False
+    assert "textual is not installed" in why
+    assert "pip install -r requirements.txt" in why
+
+
+def test_the_reason_reaches_the_screen_not_just_the_log(monkeypatch):
+    """It has to be visible where the operator is looking, which is the transcript."""
+    monkeypatch.setattr(jmain, "JarvisTUI", None)
+    args = jmain.parse_args(["--text", "--no-monitor"])
+    jmain.apply_overrides(args)
+    app = jmain.JarvisApplication(args)
+    app.build_frontend()
+    assert "textual is not installed" in app._tui_declined
+
+    said: list[tuple[str, str]] = []
+    monkeypatch.setattr(app, "_log_system", lambda text, level="info": said.append((text, level)))
+    app.wire_backend()
+    app.boot()
+    assert any("textual is not installed" in text and level == "warn" for text, level in said), said
