@@ -165,3 +165,191 @@ def test_the_reason_reaches_the_screen_not_just_the_log(monkeypatch):
     app.wire_backend()
     app.boot()
     assert any("textual is not installed" in text and level == "warn" for text, level in said), said
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════
+# Colour and the desktop window, from inside a running session
+# ══════════════════════════════════════════════════════════════════════════════════════
+def _headless(monkeypatch, tmp_path):
+    """A wired session on the pinned strip, with its theme file in a sandbox."""
+    from jarvis import theme as theme_mod
+
+    monkeypatch.setattr(theme_mod, "THEME_PATH", tmp_path / "theme.json")
+    args = jmain.parse_args(["--text", "--no-monitor", "--no-hud"])
+    jmain.apply_overrides(args)
+    app = jmain.JarvisApplication(args)
+    app.tui_wanted = lambda: False
+    app.build_frontend()
+    app.wire_backend()
+    return app
+
+
+def test_theme_accepts_any_colour_not_just_the_four_palettes(monkeypatch, tmp_path):
+    from jarvis import theme as theme_mod
+
+    app = _headless(monkeypatch, tmp_path)
+    said: list[tuple[str, str]] = []
+    monkeypatch.setattr(app, "_log_system", lambda text, level="info": said.append((text, level)))
+    try:
+        app._cmd_theme("#ff8c42")
+        assert theme_mod.load().seed == "#ff8c42"
+        assert any(level == "success" and "#ff8c42" in text for text, level in said), said
+
+        # And a colour name, and a preset, and the dice.
+        app._cmd_theme("violet")
+        assert theme_mod.load().seed == "#8b5cf6"
+        app._cmd_theme("veronica")
+        assert theme_mod.load().name == "Veronica"
+        app._cmd_theme("surprise")
+        assert theme_mod.load().name == "Surprise"
+    finally:
+        app.shutdown(spoken=False)
+
+
+def test_a_custom_colour_reaches_the_terminal_palette(monkeypatch, tmp_path):
+    """/theme is not a desktop-only setting: the strip recolours too."""
+    from jarvis.ui import PALETTES
+
+    app = _headless(monkeypatch, tmp_path)
+    try:
+        app._cmd_theme("#ff2d55")
+        assert "custom" in PALETTES
+        assert PALETTES["custom"].accent.startswith("#")
+    finally:
+        PALETTES.pop("custom", None)
+        app.shutdown(spoken=False)
+
+
+def test_an_unknown_colour_is_explained_rather_than_applied(monkeypatch, tmp_path):
+    from jarvis import theme as theme_mod
+
+    app = _headless(monkeypatch, tmp_path)
+    said: list[tuple[str, str]] = []
+    monkeypatch.setattr(app, "_log_system", lambda text, level="info": said.append((text, level)))
+    try:
+        app._cmd_theme("aubergine-flavoured")
+        assert any(level == "warn" and "#ff8c42" in text for text, level in said), said
+        assert not theme_mod.THEME_PATH.exists()
+    finally:
+        app.shutdown(spoken=False)
+
+
+def test_desktop_opens_a_window_onto_this_very_session(monkeypatch, tmp_path):
+    """One assistant, two front ends -- not a second J.A.R.V.I.S."""
+    import urllib.request
+
+    from jarvis import desktop as desktop_mod
+
+    monkeypatch.setenv("JARVIS_DESKTOP_NO_WINDOW", "1")
+    app = _headless(monkeypatch, tmp_path)
+    terminal_hud = app.hud
+    try:
+        app._cmd_desktop("")
+        window = app.desktop
+        assert window is not None
+
+        # The agent now reports into the window, and the window mirrors back
+        # into the terminal HUD it replaced.
+        assert app.hud is window.hud
+        assert window.hud.mirror is terminal_hud
+        assert app.agent.hud is window.hud
+
+        # A line typed in the browser joins the terminal's own input queue.
+        base = window.url.split("?")[0].rstrip("/")
+        request = urllib.request.Request(
+            f"{base}/api/chat", data=b'{"text": "from the window"}', method="POST"
+        )
+        request.add_header("Content-Type", "application/json")
+        request.add_header("X-Jarvis-Token", window.token)
+        urllib.request.urlopen(request, timeout=5).read()
+        assert app._queue.get(timeout=5).text == "from the window"
+
+        # The window knows what this session can do.
+        assert set(window.state_payload()["tools"]) == set(app.registry.names())
+
+        # Asking twice does not open a second one.
+        app._cmd_desktop("")
+        assert app.desktop is window
+    finally:
+        app.shutdown(spoken=False)
+
+
+def test_closing_the_window_gives_the_terminal_its_hud_back(monkeypatch, tmp_path):
+    monkeypatch.setenv("JARVIS_DESKTOP_NO_WINDOW", "1")
+    app = _headless(monkeypatch, tmp_path)
+    terminal_hud = app.hud
+    try:
+        app._cmd_desktop("")
+        assert app.hud is not terminal_hud
+        app._cmd_desktop("close")
+        assert app.desktop is None
+        assert app.hud is terminal_hud
+        assert app.agent.hud is terminal_hud
+    finally:
+        app.shutdown(spoken=False)
+
+
+def test_a_colour_chosen_in_the_window_recolours_the_terminal(monkeypatch, tmp_path):
+    import json
+    import urllib.request
+
+    from jarvis.ui import PALETTES
+
+    monkeypatch.setenv("JARVIS_DESKTOP_NO_WINDOW", "1")
+    app = _headless(monkeypatch, tmp_path)
+    try:
+        app._cmd_desktop("")
+        window = app.desktop
+        base = window.url.split("?")[0].rstrip("/")
+        request = urllib.request.Request(
+            f"{base}/api/theme",
+            data=json.dumps({"seed": "#00ff88"}).encode(),
+            method="POST",
+        )
+        request.add_header("Content-Type", "application/json")
+        request.add_header("X-Jarvis-Token", window.token)
+        urllib.request.urlopen(request, timeout=5).read()
+
+        assert "custom" in PALETTES
+        assert PALETTES["custom"].accent.startswith("#")
+    finally:
+        PALETTES.pop("custom", None)
+        app.shutdown(spoken=False)
+
+
+def test_a_remembered_colour_is_worn_at_startup(monkeypatch, tmp_path):
+    from jarvis import theme as theme_mod
+    from jarvis.ui import PALETTES
+
+    path = tmp_path / "theme.json"
+    monkeypatch.setattr(theme_mod, "THEME_PATH", path)
+    theme_mod.save(theme_mod.Theme(name="Mine", seed="#ff2d55"), path)
+
+    args = jmain.parse_args(["--text", "--no-monitor", "--no-hud"])
+    jmain.apply_overrides(args)
+    app = jmain.JarvisApplication(args)
+    app.tui_wanted = lambda: False
+    try:
+        app.build_frontend()
+        assert "custom" in PALETTES
+    finally:
+        PALETTES.pop("custom", None)
+        app.shutdown(spoken=False)
+
+
+def test_a_fresh_install_keeps_the_shipped_palettes(monkeypatch, tmp_path):
+    """No theme file means no derived approximation of the hand-tuned colours."""
+    from jarvis import theme as theme_mod
+    from jarvis.ui import PALETTES
+
+    PALETTES.pop("custom", None)
+    monkeypatch.setattr(theme_mod, "THEME_PATH", tmp_path / "never-written.json")
+    args = jmain.parse_args(["--text", "--no-monitor", "--no-hud"])
+    jmain.apply_overrides(args)
+    app = jmain.JarvisApplication(args)
+    app.tui_wanted = lambda: False
+    try:
+        app.build_frontend()
+        assert "custom" not in PALETTES
+    finally:
+        app.shutdown(spoken=False)
