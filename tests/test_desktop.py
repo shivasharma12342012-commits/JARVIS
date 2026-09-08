@@ -16,6 +16,7 @@ import queue
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 import pytest
@@ -541,3 +542,155 @@ def test_availability_passes_with_the_real_front_end():
 def test_no_window_is_opened_when_the_environment_forbids_it(monkeypatch):
     monkeypatch.setenv("JARVIS_DESKTOP_NO_WINDOW", "1")
     assert desktop_mod.open_window("http://127.0.0.1:1/") == "none"
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════
+# The workspace: what the file browser and the code viewer may see
+#
+# Which is the workspace, and nothing outside it. These are the tests that stop
+# the code section becoming a way to read ~/.ssh/id_rsa over a local port.
+# ══════════════════════════════════════════════════════════════════════════════════════
+@pytest.fixture
+def workspace(tmp_path):
+    """A small tree with something to find, and something to try to escape to."""
+    (tmp_path / "secret-outside.txt").write_text("private", encoding="utf-8")
+    root = tmp_path / "work"
+    (root / "pkg").mkdir(parents=True)
+    (root / "pkg" / "mod.py").write_text("x = 1\ny = 2\n", encoding="utf-8")
+    (root / "readme.md").write_text("# hello\n", encoding="utf-8")
+    (root / "script").write_text("#!/usr/bin/env bash\necho hi\n", encoding="utf-8")
+    (root / "picture.png").write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00binary")
+    (root / "__pycache__").mkdir()
+    (root / "__pycache__" / "junk.pyc").write_bytes(b"noise")
+    (root / ".git").mkdir()
+    return desktop_mod.Workspace(root)
+
+
+def test_the_workspace_lists_a_directory(workspace):
+    listing = workspace.listing("")
+    names = [entry["name"] for entry in listing["entries"]]
+    assert "pkg" in names and "readme.md" in names
+    assert listing["atRoot"] is True
+
+
+def test_directories_come_before_files(workspace):
+    kinds = [entry["kind"] for entry in workspace.listing("")["entries"]]
+    assert kinds == sorted(kinds, key=lambda k: k != "dir")
+
+
+def test_noise_directories_are_not_shown(workspace):
+    names = [entry["name"] for entry in workspace.listing("")["entries"]]
+    assert "__pycache__" not in names and ".git" not in names
+
+
+def test_a_nested_directory_reports_its_own_path(workspace):
+    listing = workspace.listing("pkg")
+    assert listing["path"] == "pkg" and listing["parent"] == "" and listing["atRoot"] is False
+    assert [entry["name"] for entry in listing["entries"]] == ["mod.py"]
+
+
+def test_a_file_comes_back_with_its_language_and_line_count(workspace):
+    found = workspace.read("pkg/mod.py")
+    assert found["content"] == "x = 1\ny = 2\n"
+    assert found["language"] == "python" and found["lines"] == 3
+    assert found["binary"] is False and found["truncated"] is False
+
+
+def test_an_extensionless_script_is_read_from_its_shebang(workspace):
+    """`jarvis-desktop` is one of these; plain text would be the wrong answer."""
+    assert workspace.read("script")["language"] == "bash"
+
+
+def test_a_binary_file_is_reported_rather_than_decoded(workspace):
+    found = workspace.read("picture.png")
+    assert found["binary"] is True and found["content"] == ""
+
+
+def test_a_file_longer_than_the_cap_is_truncated_and_says_so(workspace, monkeypatch):
+    monkeypatch.setattr(desktop_mod, "MAX_FILE_BYTES", 40)
+    (workspace.root / "long.py").write_text("# " + "x" * 500, encoding="utf-8")
+    found = workspace.read("long.py")
+    assert found["truncated"] is True and len(found["content"]) <= 40
+
+
+@pytest.mark.parametrize(
+    "escape",
+    [
+        "../secret-outside.txt",
+        "../../etc/passwd",
+        "pkg/../../secret-outside.txt",
+        "pkg/../..",
+        "..",
+    ],
+)
+def test_the_workspace_cannot_be_escaped(workspace, escape):
+    assert workspace.resolve(escape) is None
+    assert "error" in workspace.read(escape)
+    assert "error" in workspace.listing(escape)
+
+
+def test_an_absolute_path_is_read_as_workspace_relative(workspace):
+    """Not an escape: a leading slash means the workspace root, not the disk root."""
+    resolved = workspace.resolve("/pkg/mod.py")
+    assert resolved is not None and resolved == workspace.root / "pkg" / "mod.py"
+
+
+def test_a_symlink_pointing_out_of_the_tree_is_refused(workspace, tmp_path):
+    link = workspace.root / "escape-hatch"
+    try:
+        link.symlink_to(tmp_path / "secret-outside.txt")
+    except (OSError, NotImplementedError):
+        pytest.skip("this platform will not make symlinks")
+    assert workspace.resolve("escape-hatch") is None
+    assert "error" in workspace.read("escape-hatch")
+
+
+def test_reading_something_that_is_not_there(workspace):
+    assert "error" in workspace.read("nope.py")
+    assert "error" in workspace.listing("nope")
+    assert "error" in workspace.read("pkg")          # a directory is not a file
+    assert "error" in workspace.listing("readme.md")  # nor a file a directory
+
+
+def test_the_listing_is_capped(workspace, monkeypatch):
+    monkeypatch.setattr(desktop_mod, "MAX_DIR_ENTRIES", 3)
+    for i in range(10):
+        (workspace.root / f"file{i}.txt").write_text("x", encoding="utf-8")
+    listing = workspace.listing("")
+    assert listing["truncated"] is True
+    assert len(listing["entries"]) <= 3
+
+
+# -- over the wire ---------------------------------------------------------------------
+def test_the_file_routes_serve_the_workspace(app, tmp_path):
+    (tmp_path / "hello.py").write_text("print('hi')\n", encoding="utf-8")
+    app.workspace = desktop_mod.Workspace(tmp_path)
+
+    listing = get_json(app, "/api/files?path=")
+    assert [entry["name"] for entry in listing["entries"]] == ["hello.py"]
+
+    found = get_json(app, "/api/file?path=hello.py")
+    assert found["content"] == "print('hi')\n" and found["language"] == "python"
+
+
+def test_the_file_routes_refuse_to_escape(app, tmp_path):
+    (tmp_path / "outside.txt").write_text("private", encoding="utf-8")
+    inner = tmp_path / "inner"
+    inner.mkdir()
+    app.workspace = desktop_mod.Workspace(inner)
+
+    assert "error" in get_json(app, "/api/file?path=../outside.txt")
+    assert "error" in get_json(app, "/api/file?path=" + urllib.parse.quote("../../etc/passwd"))
+    assert "error" in get_json(app, "/api/files?path=..")
+
+
+def test_the_file_routes_need_the_session_token(app):
+    for route in ("/api/files?path=", "/api/file?path=x"):
+        with pytest.raises(urllib.error.HTTPError) as caught:
+            get_json(app, route, token="wrong")
+        assert caught.value.code == 403
+
+
+def test_the_boot_state_names_the_workspace(app):
+    state = get_json(app, "/api/state")
+    assert state["workspace"] and state["workspaceName"]

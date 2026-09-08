@@ -520,6 +520,180 @@ def _number(value: Any) -> float | None:
 
 
 # ══════════════════════════════════════════════════════════════════════════════════════
+# The workspace
+#
+# What the file browser and the code viewer are allowed to see. Which is: the
+# workspace, and nothing else. Every path the window asks for is resolved and
+# then checked against the root before a single byte is read, because the
+# alternative is a file browser that will happily serve ``../../.ssh/id_rsa`` to
+# anything holding the session token.
+# ══════════════════════════════════════════════════════════════════════════════════════
+#: Directories never worth showing an operator. Skipped in listings entirely.
+HIDDEN_DIRS = {
+    ".git", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+    "node_modules", ".venv", "venv", ".idea", ".vscode", ".tox", "dist", "build",
+    ".jarvis_cache", ".DS_Store",
+}
+
+#: Extension to language name, for the code viewer's highlighter and its header.
+LANGUAGES: dict[str, str] = {
+    ".py": "python", ".pyi": "python", ".js": "javascript", ".mjs": "javascript",
+    ".ts": "typescript", ".tsx": "typescript", ".jsx": "javascript",
+    ".json": "json", ".html": "html", ".htm": "html", ".css": "css",
+    ".scss": "css", ".md": "markdown", ".markdown": "markdown", ".rs": "rust",
+    ".go": "go", ".c": "c", ".h": "c", ".cpp": "cpp", ".cc": "cpp", ".hpp": "cpp",
+    ".java": "java", ".kt": "kotlin", ".swift": "swift", ".rb": "ruby",
+    ".php": "php", ".sh": "bash", ".bash": "bash", ".zsh": "bash", ".fish": "bash",
+    ".ps1": "powershell", ".bat": "batch", ".sql": "sql", ".yml": "yaml",
+    ".yaml": "yaml", ".toml": "toml", ".ini": "ini", ".cfg": "ini", ".env": "ini",
+    ".xml": "xml", ".svg": "xml", ".lua": "lua", ".r": "r", ".jl": "julia",
+    ".ex": "elixir", ".exs": "elixir", ".hs": "haskell", ".scala": "scala",
+    ".dart": "dart", ".vim": "vim", ".txt": "text", ".log": "text", ".cfg": "ini",
+}
+
+#: Read no more than this from one file. The viewer says when it truncated.
+MAX_FILE_BYTES = 400_000
+#: A directory with more entries than this is listed up to here and marked.
+MAX_DIR_ENTRIES = 400
+
+
+#: Interpreters worth recognising from a shebang. An extensionless script is
+#: normal on Unix — `jarvis-desktop` is one — and colouring it as plain text
+#: when its first line says otherwise is a small, avoidable failure.
+_SHEBANGS: tuple[tuple[str, str], ...] = (
+    ("python", "python"), ("bash", "bash"), ("zsh", "bash"), ("sh", "bash"),
+    ("node", "javascript"), ("ruby", "ruby"), ("perl", "perl"), ("php", "php"),
+)
+
+
+def _shebang_language(text: str) -> str:
+    """The language a `#!` line names, or ``text`` when there is not one."""
+    first = text[:200].split("\n", 1)[0]
+    if not first.startswith("#!"):
+        return "text"
+    for needle, language in _SHEBANGS:
+        if needle in first:
+            return language
+    return "bash"
+
+
+class Workspace:
+    """Read-only, sandboxed access to the operator's working directory."""
+
+    def __init__(self, root: Path | None = None) -> None:
+        self._root = root
+
+    @property
+    def root(self) -> Path:
+        """Resolved every time: an operator may retarget the workspace mid-session."""
+        if self._root is not None:
+            return self._root.resolve()
+        return Path(settings.WORKSPACE_ROOT).resolve()
+
+    def resolve(self, relative: str) -> Path | None:
+        """Turn a browser-supplied path into a real one, or None if it escapes.
+
+        ``None`` covers every refusal — traversal, absolute paths, symlinks
+        pointing out of the tree — so callers have exactly one thing to check.
+        """
+        root = self.root
+        try:
+            candidate = (root / (relative or "").lstrip("/\\")).resolve()
+        except (OSError, ValueError, RuntimeError):
+            return None
+        # resolve() has already followed every symlink and collapsed every "..",
+        # so this one comparison is the whole boundary. tools.py makes the same
+        # check; it is not imported here because doing so would drag httpx and
+        # the ollama client into a module that needs neither.
+        try:
+            return candidate if candidate == root or candidate.is_relative_to(root) else None
+        except ValueError:
+            return None
+
+    def listing(self, relative: str = "") -> dict[str, Any]:
+        """One directory, directories first, then files, both alphabetical."""
+        target = self.resolve(relative)
+        if target is None or not target.is_dir():
+            return {"error": "no such directory"}
+
+        root = self.root
+        entries: list[dict[str, Any]] = []
+        try:
+            children = sorted(
+                target.iterdir(), key=lambda p: (p.is_file(), p.name.lower())
+            )
+        except OSError:
+            return {"error": "that directory cannot be read"}
+
+        for child in children[:MAX_DIR_ENTRIES]:
+            if child.name in HIDDEN_DIRS or child.name.endswith((".pyc", ".pyo")):
+                continue
+            try:
+                is_dir = child.is_dir()
+                size = 0 if is_dir else child.stat().st_size
+            except OSError:
+                continue
+            entries.append(
+                {
+                    "name": child.name,
+                    "path": str(child.relative_to(root)).replace("\\", "/"),
+                    "kind": "dir" if is_dir else "file",
+                    "size": size,
+                    "language": LANGUAGES.get(child.suffix.lower(), "") if not is_dir else "",
+                }
+            )
+
+        rel = "" if target == root else str(target.relative_to(root)).replace("\\", "/")
+        parent = "" if not rel else str(Path(rel).parent).replace("\\", "/")
+        return {
+            "path": rel,
+            "parent": "" if parent == "." else parent,
+            "root": root.name,
+            "atRoot": rel == "",
+            "entries": entries,
+            "truncated": len(children) > MAX_DIR_ENTRIES,
+        }
+
+    def read(self, relative: str) -> dict[str, Any]:
+        """One file's text, capped, with the language the viewer should colour it as."""
+        target = self.resolve(relative)
+        if target is None or not target.is_file():
+            return {"error": "no such file"}
+        try:
+            raw = target.read_bytes()[: MAX_FILE_BYTES + 1]
+        except OSError:
+            return {"error": "that file cannot be read"}
+
+        truncated = len(raw) > MAX_FILE_BYTES
+        raw = raw[:MAX_FILE_BYTES]
+        # A NUL byte in the first block is the oldest binary test there is, and
+        # still the right one: it beats guessing from the extension.
+        if b"\x00" in raw[:8192]:
+            return {
+                "path": relative,
+                "name": target.name,
+                "binary": True,
+                "size": target.stat().st_size,
+                "content": "",
+            }
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            text = raw.decode("utf-8", errors="replace")
+
+        return {
+            "path": str(target.relative_to(self.root)).replace("\\", "/"),
+            "name": target.name,
+            "language": LANGUAGES.get(target.suffix.lower()) or _shebang_language(text),
+            "content": text,
+            "lines": text.count("\n") + 1,
+            "size": len(raw),
+            "truncated": truncated,
+            "binary": False,
+        }
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════
 # Backends
 #
 # The window needs somewhere to send what the operator types. Two shapes exist:
@@ -884,6 +1058,10 @@ class _Handler(BaseHTTPRequestHandler):
             self._stream()
         elif route == "/api/ping":
             self._json({"ok": True, "clients": self.app.hub.client_count})
+        elif route == "/api/files":
+            self._json(self.app.workspace.listing(_query(self.path).get("path", [""])[0]))
+        elif route == "/api/file":
+            self._json(self.app.workspace.read(_query(self.path).get("path", [""])[0]))
         else:
             self._json({"error": "no such route"}, 404)
 
@@ -1129,6 +1307,9 @@ class DesktopApp:
     ) -> None:
         self.hub = EventHub()
         self.hud = DesktopHUD(self.hub, mirror=mirror)
+        #: What the file browser and the code viewer may see: the workspace, and
+        #: nothing outside it.
+        self.workspace = Workspace()
         self.backend = backend or StandaloneBackend()
         self.backend.hud = self.hud
         self.host = host
@@ -1255,6 +1436,8 @@ class DesktopApp:
             "modes": list(theme_mod.MODES),
             "fonts": [{"key": key, "label": label} for key, label in theme_mod.FONTS],
             "standalone": False,
+            "workspace": str(self.workspace.root),
+            "workspaceName": self.workspace.root.name,
         }
         try:
             payload.update(self.backend.snapshot())

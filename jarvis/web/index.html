@@ -22,7 +22,14 @@
   <span class="grain"></span>
 </div>
 
+<!-- ── title bar ──────────────────────────────────────────────────────────── -->
 <header class="titlebar">
+  <span class="lights" aria-hidden="true"><i></i><i></i><i></i></span>
+
+  <button class="icon-btn" id="btn-sidebar" title="Sidebar" aria-label="Toggle the sidebar">
+    <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></svg>
+  </button>
+
   <div class="brand">
     <span class="reactor" id="reactor" aria-hidden="true">
       <svg viewBox="0 0 100 100">
@@ -37,8 +44,8 @@
       </svg>
     </span>
     <span class="brand-text">
-      <strong id="brand-name">J.A.R.V.I.S.</strong>
-      <small id="brand-sub">Just A Rather Very Intelligent System</small>
+      <strong id="session-title">New session</strong>
+      <small id="session-sub">J.A.R.V.I.S.</small>
     </span>
   </div>
 
@@ -54,20 +61,50 @@
     <button class="icon-btn" id="btn-command" title="Commands  ·  Ctrl+K" aria-label="Open the command palette">
       <svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
     </button>
-    <button class="icon-btn" id="btn-rail" title="Instruments panel" aria-label="Toggle the instruments panel">
+    <button class="icon-btn" id="btn-rail" title="Preview rail  ·  Ctrl+B" aria-label="Toggle the preview rail">
       <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M15 4v16"/></svg>
     </button>
   </div>
 </header>
 
-<main class="shell">
-  <!-- ── the conversation ─────────────────────────────────────────────────── -->
+<main class="shell" id="shell">
+  <!-- ── sidebar ───────────────────────────────────────────────────────────── -->
+  <nav class="sidebar" id="sidebar" aria-label="Sessions and workspace">
+    <button class="new-session" id="btn-new">
+      <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg> New session
+    </button>
+
+    <section class="side-block">
+      <h2>Sessions</h2>
+      <ul class="sessions" id="session-list"></ul>
+    </section>
+
+    <section class="side-block grow">
+      <h2>
+        Workspace
+        <button class="mini-btn" id="btn-tree-refresh" title="Reload the tree" aria-label="Reload the tree">
+          <svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 0 1 13.7-5.7L20 8M20 4v4h-4M20 12a8 8 0 0 1-13.7 5.7L4 16M4 20v-4h4"/></svg>
+        </button>
+      </h2>
+      <div class="tree" id="tree" role="tree"></div>
+    </section>
+
+    <div class="side-foot">
+      <span class="mono" id="cwd-label">~</span>
+    </div>
+  </nav>
+
+  <div class="seam" id="seam-left" role="separator" aria-orientation="vertical" tabindex="0"
+       aria-label="Resize the sidebar"></div>
+
+  <!-- ── conversation ──────────────────────────────────────────────────────── -->
   <section class="conversation">
     <div class="transcript" id="transcript" role="log" aria-live="polite" aria-label="Conversation">
       <div class="welcome" id="welcome">
         <div class="welcome-glow" aria-hidden="true"></div>
         <h1>Good to see you, <span id="welcome-title">Sir</span>.</h1>
-        <p>Everything below is yours to recolour — press <kbd>Ctrl</kbd><kbd>/</kbd> and pick any colour in the world.</p>
+        <p>Ask anything. Files and tool output open on the right; the agentic terminal
+           runs in its own tab beside them.</p>
         <div class="suggestions" id="suggestions"></div>
       </div>
     </div>
@@ -100,38 +137,104 @@
     </div>
   </section>
 
-  <!-- ── instruments ──────────────────────────────────────────────────────── -->
-  <aside class="rail" id="rail">
-    <div class="rail-card">
-      <h2>Machine</h2>
-      <div class="gauges" id="gauges">
-        <div class="gauge" data-key="cpu"><label>CPU</label><div class="bar"><i></i></div><b>—</b></div>
-        <div class="gauge" data-key="ram"><label>Memory</label><div class="bar"><i></i></div><b>—</b></div>
-        <div class="gauge" data-key="disk"><label>Disk</label><div class="bar"><i></i></div><b>—</b></div>
-        <div class="gauge" data-key="battery"><label>Battery</label><div class="bar"><i></i></div><b>—</b></div>
+  <div class="seam" id="seam-right" role="separator" aria-orientation="vertical" tabindex="0"
+       aria-label="Resize the preview rail"></div>
+
+  <!-- ── preview rail ──────────────────────────────────────────────────────── -->
+  <aside class="rail" id="rail" aria-label="Preview">
+    <div class="rail-tabs" role="tablist">
+      <button class="rail-tab on" data-view="code" role="tab" aria-selected="true">
+        <svg viewBox="0 0 24 24"><path d="M9 8l-4 4 4 4M15 8l4 4-4 4"/></svg> Code
+      </button>
+      <button class="rail-tab" data-view="terminal" role="tab" aria-selected="false">
+        <svg viewBox="0 0 24 24"><path d="M5 8l4 4-4 4M12 16h7"/></svg> Terminal
+      </button>
+      <button class="rail-tab" data-view="system" role="tab" aria-selected="false">
+        <svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 9h8M8 13h5"/></svg> System
+      </button>
+    </div>
+
+    <!-- Code -->
+    <div class="rail-view on" id="view-code" role="tabpanel">
+      <div class="tabstrip" id="tabstrip"></div>
+      <div class="crumbs" id="crumbs"></div>
+      <div class="code-host" id="code-host">
+        <div class="code-empty" id="code-empty">
+          <svg viewBox="0 0 24 24"><path d="M9 8l-4 4 4 4M15 8l4 4-4 4"/></svg>
+          <p>Pick a file from the workspace tree, or ask J.A.R.V.I.S. to open one.</p>
+        </div>
+        <div class="code-scroll" id="code-scroll" hidden>
+          <table class="code-table"><tbody id="code-body"></tbody></table>
+        </div>
       </div>
-      <div class="cores" id="cores" aria-hidden="true"></div>
-      <p class="rail-note" id="machine-note">Waiting for the ambient monitor…</p>
+      <div class="code-foot" id="code-foot" hidden>
+        <span id="code-meta" class="mono"></span>
+        <span class="spacer"></span>
+        <button class="mini-btn wide" id="btn-code-wrap" title="Soft-wrap long lines">Wrap</button>
+        <button class="mini-btn wide" id="btn-code-copy">Copy</button>
+        <button class="mini-btn wide" id="btn-code-ask">Ask about this</button>
+      </div>
     </div>
 
-    <div class="rail-card">
-      <h2>Model</h2>
-      <p class="mono" id="model-name">—</p>
-      <p class="rail-note mono" id="model-host">—</p>
-      <p class="rail-note" id="metrics-line">No turn measured yet.</p>
+    <!-- Terminal: the agentic HUD, live, inside the app -->
+    <div class="rail-view" id="view-terminal" role="tabpanel">
+      <div class="term-head">
+        <span class="mono" id="term-title">jarvis · agentic session</span>
+        <span class="spacer"></span>
+        <button class="mini-btn wide" id="btn-term-clear">Clear</button>
+      </div>
+      <div class="term" id="term" role="log" aria-label="Agentic terminal"></div>
     </div>
 
-    <div class="rail-card grow">
-      <h2>Instruments <span class="count" id="tool-count">0</span></h2>
-      <ul class="chips" id="tool-list"></ul>
-    </div>
+    <!-- System -->
+    <div class="rail-view" id="view-system" role="tabpanel">
+      <div class="rail-scroll">
+        <section class="rail-card">
+          <h3>Machine</h3>
+          <div class="gauges" id="gauges">
+            <div class="gauge" data-key="cpu"><label>CPU</label><div class="bar"><i></i></div><b>—</b></div>
+            <div class="gauge" data-key="ram"><label>Memory</label><div class="bar"><i></i></div><b>—</b></div>
+            <div class="gauge" data-key="disk"><label>Disk</label><div class="bar"><i></i></div><b>—</b></div>
+            <div class="gauge" data-key="battery"><label>Battery</label><div class="bar"><i></i></div><b>—</b></div>
+          </div>
+          <div class="cores" id="cores" aria-hidden="true"></div>
+          <p class="rail-note" id="machine-note">Waiting for the ambient monitor…</p>
+        </section>
 
-    <div class="rail-card">
-      <h2>Protocols</h2>
-      <ul class="chips" id="protocol-list"></ul>
+        <section class="rail-card">
+          <h3>Model</h3>
+          <p class="mono" id="model-name">—</p>
+          <p class="rail-note mono" id="model-host">—</p>
+          <p class="rail-note" id="metrics-line">No turn measured yet.</p>
+        </section>
+
+        <section class="rail-card">
+          <h3>Instruments <span class="count" id="tool-count">0</span></h3>
+          <ul class="chips" id="tool-list"></ul>
+        </section>
+
+        <section class="rail-card">
+          <h3>Protocols</h3>
+          <ul class="chips" id="protocol-list"></ul>
+        </section>
+      </div>
     </div>
   </aside>
 </main>
+
+<!-- ── status bar ─────────────────────────────────────────────────────────── -->
+<footer class="statusbar">
+  <span class="sb-item" id="sb-state"><i class="sb-dot"></i> Ready</span>
+  <span class="sb-sep"></span>
+  <span class="sb-item mono" id="sb-model">—</span>
+  <span class="sb-sep"></span>
+  <span class="sb-item mono" id="sb-cwd">—</span>
+  <span class="spacer"></span>
+  <span class="sb-item mono" id="sb-file"></span>
+  <span class="sb-item mono" id="sb-metrics"></span>
+  <span class="sb-item mono" id="sb-cpu"></span>
+  <span class="sb-item" id="sb-link" title="Connection">live</span>
+</footer>
 
 <!-- ── theme studio ───────────────────────────────────────────────────────── -->
 <div class="scrim" id="scrim" hidden></div>
@@ -204,7 +307,7 @@
 <!-- ── command palette ────────────────────────────────────────────────────── -->
 <div class="palette-wrap" id="palette-wrap" hidden>
   <div class="palette" role="dialog" aria-label="Command palette">
-    <input type="text" id="palette-input" placeholder="Type a command…" spellcheck="false" autocomplete="off">
+    <input type="text" id="palette-input" placeholder="Type a command, or a file name…" spellcheck="false" autocomplete="off">
     <ul id="palette-list"></ul>
   </div>
 </div>
