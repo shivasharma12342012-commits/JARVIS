@@ -6,6 +6,7 @@ __pycache__/
 logs/
 .jarvis_cache/
 .jarvis_profile.json
+.jarvis_theme.json
 .jarvis_voiceprint.json
 .env
 

@@ -1,0 +1,28 @@
+#!/usr/bin/env sh
+# J.A.R.V.I.S. Desktop — the windowed front end.
+#
+#   ./jarvis-desktop                  open the window
+#   ./jarvis-desktop --theme violet   open it in a colour
+#   ./jarvis-desktop --no-window      serve it, print the address, open it yourself
+#
+# Put this directory on your PATH (or symlink this file into ~/.local/bin) and
+# the command is simply `jarvis-desktop` from anywhere.
+set -eu
+
+HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+# Prefer a virtualenv sitting next to the source, then python3, then python.
+if [ -x "$HERE/.venv/bin/python" ]; then
+    PY="$HERE/.venv/bin/python"
+elif [ -x "$HERE/venv/bin/python" ]; then
+    PY="$HERE/venv/bin/python"
+elif command -v python3 >/dev/null 2>&1; then
+    PY=python3
+elif command -v python >/dev/null 2>&1; then
+    PY=python
+else
+    echo "jarvis-desktop: no Python interpreter found on PATH." >&2
+    exit 1
+fi
+
+exec "$PY" "$HERE/main.py" desktop "$@"

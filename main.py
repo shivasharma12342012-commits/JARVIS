@@ -46,6 +46,7 @@ from config import (
 )
 from jarvis import __version__, prompts
 from jarvis import apps, languages, locales, speaker
+from jarvis import theme as theme_mod
 from jarvis.core import JarvisAgent
 from jarvis.engine import build_agent
 from jarvis.monitor import AmbientMonitor, telemetry_report
@@ -100,7 +101,8 @@ COMMANDS: list[tuple[str, str]] = [
     ("/model", "Report the model, the host and live availability."),
     ("/history", "Show the recent conversation memory."),
     ("/mics", "Enumerate the available input devices."),
-    ("/theme <palette>", "Switch the HUD palette."),
+    ("/theme <colour>", "Any colour you like: #ff8c42, violet, veronica, surprise."),
+    ("/desktop", "Open the windowed front end onto this session."),
     ("/title <value>", "Change how I address you. Persisted."),
     ("/metrics", "Latency of the last turn: first token, throughput, tool time."),
 ]
@@ -157,6 +159,36 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--classic",
         action="store_true",
         help="use the pinned status strip instead of the full-screen HUD",
+    )
+    parser.add_argument(
+        "command",
+        nargs="?",
+        default=None,
+        choices=["desktop", "app", "gui", "window"],
+        help='"desktop" opens the windowed front end instead of the terminal one',
+    )
+    parser.add_argument(
+        "--desktop",
+        action="store_true",
+        help="open the windowed front end: graphical transcript and a full colour picker",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        metavar="N",
+        default=0,
+        help="port for the desktop app (default: whatever the OS hands out)",
+    )
+    parser.add_argument(
+        "--no-window",
+        action="store_true",
+        help="serve the desktop app but do not open a window; print the address instead",
+    )
+    parser.add_argument(
+        "--theme",
+        metavar="COLOUR",
+        default=None,
+        help="start in a given colour: a hex code, a colour name, a preset or 'surprise'",
     )
     parser.add_argument(
         "--no-turbo",
@@ -434,6 +466,8 @@ class JarvisApplication:
         self._consumer: threading.Thread | None = None
         #: Why the full-screen HUD was declined, when it was and it is worth saying.
         self._tui_declined = ""
+        #: The desktop window, once /desktop has opened one. None otherwise.
+        self.desktop: Any = None
 
     # -- construction ------------------------------------------------------------------
     def build_frontend(self) -> None:
@@ -460,6 +494,19 @@ class JarvisApplication:
                 "front end: pinned status strip%s",
                 f" ({self._tui_declined})" if self._tui_declined else "",
             )
+        # Wear whatever colours the operator last chose — in the terminal as
+        # well as in the window. A theme picked in the desktop app is not a
+        # desktop-app setting; it is how they want J.A.R.V.I.S. to look.
+        #
+        # Only when they have actually chosen one, though. A fresh install has
+        # no theme file, and the terminal HUDs keep the hand-tuned palettes they
+        # shipped with rather than a derived approximation of them.
+        if theme_mod.THEME_PATH.exists():
+            try:
+                self._recolour_terminal(theme_mod.load())
+            except Exception:
+                LOG.debug("Could not apply the remembered theme", exc_info=True)
+
         if settings.voice_wanted:
             self.voice = VoiceSystem(
                 on_wake=self._on_wake,
@@ -1213,6 +1260,10 @@ class JarvisApplication:
             "metrics": self._cmd_metrics,
             "mics": self._cmd_mics,
             "theme": self._cmd_theme,
+            "desktop": self._cmd_desktop,
+            "app": self._cmd_desktop,
+            "colour": self._cmd_theme,
+            "color": self._cmd_theme,
             "title": self._cmd_title,
             "lang": self._cmd_lang,
             "locales": self._cmd_locales,
@@ -1445,14 +1496,190 @@ class JarvisApplication:
         self.hud.render_table("Input devices", ["Index", "Device"], rows)
 
     def _cmd_theme(self, argument: str) -> None:
-        """Switch the HUD palette."""
-        name = argument.strip().lower().replace(" ", "_").replace("-", "_")
-        if name not in PALETTES:
-            self._log_system(f"Palettes: {', '.join(sorted(PALETTES))}", "warn")
+        """Recolour everything — the terminal, and any open desktop window.
+
+        The old four-palette version is still in here: ``/theme veronica`` does
+        what it always did. What is new is that ``/theme #ff8c42``, ``/theme
+        violet`` and ``/theme surprise`` work too, because the colours are now
+        derived from a seed rather than picked off a list.
+        """
+        spec = argument.strip()
+        if not spec:
+            current = theme_mod.load()
+            self._log_system(
+                f"Currently: {theme_mod.describe(current)}.  "
+                f"/theme <hex, colour name, or one of: "
+                f"{', '.join(sorted(theme_mod.PRESETS))}, surprise>",
+                "info",
+            )
             return
+
+        # A shipped palette name keeps its original terminal behaviour as well
+        # as recolouring the window, so nothing an operator already knows breaks.
+        legacy = spec.lower().replace(" ", "_").replace("-", "_")
+        if legacy in PALETTES and self.hud is not None:
+            try:
+                self.hud.set_palette(legacy)
+            except Exception:
+                LOG.debug("HUD refused the palette %s", legacy, exc_info=True)
+
+        chosen = theme_mod.resolve(spec, theme_mod.load())
+        if chosen is None:
+            self._log_system(
+                f"I do not know the colour {spec!r}. Give me a hex code such as "
+                f"#ff8c42, a colour name such as violet, a preset "
+                f"({', '.join(sorted(theme_mod.PRESETS))}) or 'surprise'.",
+                "warn",
+            )
+            return
+
+        self.apply_theme(chosen)
+        self._log_system(f"Colours: {theme_mod.describe(chosen)}.", "success")
+
+    def apply_theme(self, chosen: "theme_mod.Theme") -> None:
+        """Persist a theme and push it everywhere it can be seen."""
+        theme_mod.save(chosen)
+        self._recolour_terminal(chosen)
+        if self.desktop is not None:
+            try:
+                self.desktop.theme = chosen
+                self.desktop.hub.publish(
+                    "theme", theme=chosen.to_dict(), variables=chosen.css_variables()
+                )
+            except Exception:
+                LOG.debug("Desktop window would not take the theme", exc_info=True)
+
+    def _recolour_terminal(self, chosen: "theme_mod.Theme") -> None:
+        """Register the theme with whichever terminal front end is running.
+
+        Both terminal HUDs look their palettes up by name in a module-level
+        dict, so a custom theme becomes real by being registered under the key
+        ``custom`` and then selected. Rich and Textual both accept ``#rrggbb``
+        wherever they accept a colour name, so one derivation serves all three
+        front ends.
+        """
+        key = "custom"
+        try:
+            from jarvis.ui import PALETTES as RICH_PALETTES, Palette
+
+            RICH_PALETTES[key] = Palette(**chosen.rich_palette())
+        except Exception:
+            LOG.debug("Could not register the palette with the status strip", exc_info=True)
+        try:
+            from textual.theme import Theme as TextualTheme
+
+            from jarvis import tui as tui_mod
+
+            tui_mod.THEMES[key] = TextualTheme(**chosen.textual_theme())
+            tui_mod.INKS[key] = tui_mod.Ink(**chosen.textual_ink())
+            # A Textual app has to be told about a theme before it can wear it.
+            register = getattr(self.tui, "register_theme", None)
+            if callable(register):
+                register(tui_mod.THEMES[key])
+        except Exception:
+            LOG.debug("Could not register the theme with the full-screen HUD", exc_info=True)
         if self.hud is not None:
-            self.hud.set_palette(name)
-        self._log_system(f"Palette set to {name.replace('_', ' ')}.", "success")
+            try:
+                self.hud.set_palette(key)
+            except Exception:
+                LOG.debug("HUD refused the custom palette", exc_info=True)
+
+    def _cmd_desktop(self, argument: str) -> None:
+        """Open a window onto this very session.
+
+        Not a second J.A.R.V.I.S.: the window shares this one's memory, tools
+        and permissions, and anything typed into it joins the same queue the
+        terminal uses. Two front ends, one assistant.
+        """
+        action = argument.strip().lower()
+        if action in {"close", "stop", "off", "quit"}:
+            self._close_desktop()
+            return
+
+        if self.desktop is not None:
+            self._log_system(f"The window is already open: {self.desktop.url}", "info")
+            return
+
+        try:
+            from jarvis import desktop as desktop_mod
+        except ImportError:
+            self._log_system("The desktop front end is not installed.", "error")
+            return
+
+        ok, why = desktop_mod.available()
+        if not ok:
+            self._log_system(f"I cannot open a window: {why}.", "error")
+            return
+
+        try:
+            app = desktop_mod.attach(
+                on_submit=lambda text: self._queue.put(InputEvent("typed", text)),
+                on_interrupt=self._interrupt_or_quit,
+                snapshot=self._desktop_snapshot,
+                mirror=self.hud,
+                theme=theme_mod.load(),
+                on_theme_change=self._recolour_terminal,
+            )
+        except Exception as exc:
+            LOG.exception("The desktop window would not open")
+            self._log_system(f"The window would not open: {exc}", "error")
+            return
+
+        self.desktop = app
+        # From here on, everything the agent says goes to the window *and* the
+        # terminal: app.hud mirrors into the HUD it was handed.
+        self.hud = app.hud
+        for target, kwargs in (
+            (self.agent, {"hud": app.hud}),
+            (self.engine, {"hud": app.hud}),
+            (self.broker, {"hud": app.hud}),
+        ):
+            if target is None:
+                continue
+            binder = getattr(target, "bind", None)
+            if callable(binder):
+                binder(**kwargs)
+            else:
+                setattr(target, "hud", app.hud)
+        self._log_system(
+            f"Window open — {app.url}  "
+            "Everything you type there lands in this same session.",
+            "success",
+        )
+
+    def _desktop_snapshot(self) -> dict[str, Any]:
+        """What the window shows about this session before its first message."""
+        return {
+            "model": settings.MODEL_NAME,
+            "host": settings.OLLAMA_HOST,
+            "title": settings.USER_TITLE,
+            "tools": sorted(self.registry.names()) if self.registry else [],
+            "protocols": sorted(self.engine.names()) if self.engine else [],
+            "standalone": False,
+        }
+
+    def _close_desktop(self) -> None:
+        """Shut the window and give the terminal its HUD back."""
+        app, self.desktop = self.desktop, None
+        if app is None:
+            self._log_system("There is no window open.", "info")
+            return
+        terminal_hud = app.hud.mirror
+        try:
+            app.stop()
+        except Exception:
+            LOG.debug("The desktop app did not close cleanly", exc_info=True)
+        if terminal_hud is not None:
+            self.hud = terminal_hud
+            for target in (self.agent, self.engine, self.broker):
+                if target is None:
+                    continue
+                binder = getattr(target, "bind", None)
+                if callable(binder):
+                    binder(hud=terminal_hud)
+                else:
+                    setattr(target, "hud", terminal_hud)
+        self._log_system("Window closed.", "info")
 
     def _cmd_title(self, argument: str) -> None:
         """Change the form of address on the fly, and remember it."""
@@ -1733,6 +1960,13 @@ class JarvisApplication:
             except Exception:
                 LOG.exception("voice shutdown failed")
 
+        if self.desktop is not None:
+            try:
+                self.desktop.stop()
+            except Exception:
+                LOG.exception("desktop window shutdown failed")
+            self.desktop = None
+
         if self.monitor is not None:
             try:
                 self.monitor.stop(timeout=3.0)
@@ -1969,6 +2203,51 @@ def enroll_voice() -> int:
     return 0
 
 
+def resolve_startup_theme(spec: str | None) -> "theme_mod.Theme":
+    """Work out which colours to start in, honouring ``--theme`` when given.
+
+    An unrecognisable colour is worth saying something about — the operator
+    asked for it explicitly — but it is never worth refusing to start over.
+    """
+    remembered = theme_mod.load()
+    if not spec:
+        return remembered
+    chosen = theme_mod.resolve(spec, remembered)
+    if chosen is None:
+        print(
+            f"I do not know the colour {spec!r}. Try a hex code such as #ff8c42, "
+            f"a name such as violet, or one of: {', '.join(sorted(theme_mod.PRESETS))}.",
+            file=sys.stderr,
+        )
+        return remembered
+    theme_mod.save(chosen)
+    return chosen
+
+
+def run_desktop(args: argparse.Namespace) -> int:
+    """Open J.A.R.V.I.S. Desktop: the windowed front end, standing alone.
+
+    Nothing about the terminal experience is involved here. The desktop app
+    builds its own agent and owns the process until the window closes.
+    """
+    from jarvis import desktop
+
+    ok, why = desktop.available()
+    if not ok:
+        print(f"The desktop app cannot start: {why}.", file=sys.stderr)
+        return 1
+
+    resolve_startup_theme(getattr(args, "theme", None))
+    LOG.info("front end: desktop window")
+    return desktop.run(
+        port=getattr(args, "port", 0) or 0,
+        open_window_on_start=not getattr(args, "no_window", False),
+        turbo=not getattr(args, "no_turbo", False),
+        monitor=not getattr(args, "no_monitor", False),
+        model=getattr(args, "model", None),
+    )
+
+
 def run_daemon() -> int:
     """Background mode: wait for the call word, greet, and open a terminal."""
     from rich.console import Console
@@ -2038,6 +2317,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.locales:
         print(locales.report())
         return 0
+
+    if args.desktop or args.command in {"desktop", "app", "gui", "window"}:
+        return run_desktop(args)
 
     return JarvisApplication(args).run()
 

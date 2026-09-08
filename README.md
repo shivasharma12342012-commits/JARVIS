@@ -20,6 +20,8 @@ languages including Hindi, Bengali, Telugu, Marathi and Tamil.
 
 | | |
 |---|---|
+| **Desktop app** | `jarvis-desktop` opens a real window: a graphical transcript, instrument cards, live machine gauges, a command palette and a colour studio. Runs on the standard library alone — no Electron, no bundle, no extra install. |
+| **Any colour you like** | Not four palettes: *any* colour. Drag a wheel or type `#ff8c42`, and the entire interface — backgrounds, surfaces, borders, gauges, the reactor — is re-derived from that one seed, stays readable by WCAG AA, and is remembered. `/theme violet` works in the terminal too. |
 | **Full-screen HUD** | The whole terminal, in Claude Code's grammar: a scrollable transcript, replies that arrive word by word, instrument cards that spin while they run and resolve in place, and a working line that says what it is doing and how to stop it. It opens on a greeting that has read the machine first. `--classic` restores the old pinned strip. |
 | **Live keywords** | `talk` and `quiet` act the moment you send them, and are coloured as you type them so you can see it before you press enter. |
 | **Built to answer fast** | The model is loaded before you ask; the reply streams to the screen as it is generated; independent instruments run side by side; Ctrl-C tears the request down rather than asking it to stop when convenient. |
@@ -45,8 +47,11 @@ cd C:\Users\Shiva\J.A.R.V.I.S._AI
 # 1. Make sure the Ollama API server is actually running (see the note below)
 ollama serve
 
-# 2. Launch
+# 2. Launch — the terminal HUD
 .venv\Scripts\python.exe main.py
+
+# ...or the desktop window
+jarvis-desktop
 ```
 
 That is it — the virtual environment is already built and every dependency, including
@@ -477,7 +482,8 @@ path is asserted to resolve under the project root before anything is unlinked.
 | `/permissions` · `/allow <app>` · `/revoke` | What he may do outside the workspace |
 | `/voice on\|off` · `/mute` · `/unmute` | Audio control |
 | `/mics` | Input devices |
-| `/theme <palette>` | `standard`, `house_party`, `veronica`, `clean_slate` |
+| `/theme <colour>` | **Any colour**: `#ff8c42`, `violet`, `veronica`, `light`, `surprise` |
+| `/desktop` | Open the desktop window onto this session (`/desktop close` shuts it) |
 | `/title <value>` | Change how he addresses you |
 | `/model` · `/history` · `/clear` | Model info · transcript · reset context |
 | `/metrics` | Where the last turn's time went: first token, throughput, instrument time |
@@ -495,6 +501,9 @@ path is asserted to resolve under the project root before anything is unlinked.
 | `--protocol <name>` | Fire a protocol at boot |
 | `--model <name>` · `--host <url>` | Override Ollama settings |
 | `--classic` | The pinned status strip instead of the full-screen HUD |
+| `desktop` · `--desktop` | Open the desktop window instead of the terminal front end |
+| `--theme <colour>` | Start in a colour: a hex code, a name, a preset or `surprise` |
+| `--port <n>` · `--no-window` | Pin the desktop app's port · serve it without opening a window |
 | `--no-turbo` | Drive the model synchronously: no warm-up, no parallel instruments |
 | `--no-hud` · `--no-monitor` | Plain output · no ambient thread |
 | `--talk` | Start in speaking mode instead of silent |
@@ -504,6 +513,117 @@ path is asserted to resolve under the project root before anything is unlinked.
 | `--daemon` / `--listen` | Background listener; opens a terminal on the call word |
 | `--reset-profile` | Forget the form of address and ask again |
 | `--debug` | Log at DEBUG |
+
+---
+
+## J.A.R.V.I.S. Desktop
+
+A third front end. The two terminal HUDs are excellent at what they do and completely
+unable to render a colour wheel, so this one is a window.
+
+```bash
+jarvis-desktop                    # the launcher script
+jarvis-desktop --theme violet     # ...opened in a colour
+python main.py desktop            # the same thing, spelled out
+python main.py --desktop          # or as a flag
+```
+
+Inside a session already running in the terminal, `/desktop` opens a window onto
+**that** session — same memory, same instruments, same permissions, one queue. Anything
+typed in the window arrives exactly as if it had been typed in the terminal, and
+everything J.A.R.V.I.S. says appears in both. `/desktop close` puts it away.
+
+### What is in the window
+
+| | |
+|---|---|
+| **Transcript** | Replies stream in word by word behind a caret, then settle into rendered Markdown — headings, lists, tables, quotes, and code blocks with a Copy button. |
+| **Instrument cards** | Every tool call appears as a card that spins while it runs and resolves in place with its reading. |
+| **Machine gauges** | Live CPU, memory, disk and battery, plus a per-core strip, fed by the same ambient monitor the terminal uses. |
+| **Permission cards** | The consent layer, as a card with *Allow once* / *Always allow* / *Deny*. Nothing reaches outside the workspace without one. |
+| **Command palette** | `Ctrl`+`K` for every command and every protocol, searchable. |
+| **Colour studio** | `Ctrl`+`/`. The next section. |
+
+Keys: `Enter` sends, `Shift`+`Enter` newlines, `/` opens command completion, `Ctrl`+`K`
+the palette, `Ctrl`+`/` the colours, `Ctrl`+`B` the instrument rail, `Esc` interrupts.
+Start typing anywhere and the composer takes it.
+
+### How it is built
+
+A local web application, and deliberately so. The interface has to animate at sixty
+frames a second and recolour itself completely from one operator-chosen seed — the first
+is CSS's home ground and the second is four lines of custom properties in CSS and a
+rewrite in every GUI toolkit. It also must not add a hundred megabytes to a project that
+installs from a short requirements file.
+
+So the server is **standard library only**: `http.server`, one long-lived `GET` for
+Server-Sent Events, and three static files. No Flask, no websockets package, no bundler,
+no Electron, nothing new in `requirements.txt`. The window itself is whichever of these
+the machine has, best first: `pywebview` if it happens to be installed, otherwise a
+Chromium-family browser in `--app` mode (no tabs, no address bar, its own profile), and
+failing both, an ordinary tab.
+
+It binds to `127.0.0.1` only, mints a random token at startup, and refuses any request
+that does not carry it or that claims a `Host` other than localhost. That last check is
+not decoration: J.A.R.V.I.S. runs shell commands, so an unguarded local port would be a
+remote code execution hole for any page in the browser.
+
+---
+
+## Colour
+
+Four fixed palettes were never the point. Pick **any** colour and the whole interface is
+derived from it.
+
+```bash
+/theme #ff8c42          # a hex code
+/theme violet           # a name — 40-odd of them, plus every CSS name
+/theme veronica         # a preset, fourteen of them
+/theme light            # change the ground, keep the colour
+/theme surprise         # random, but never ugly
+/theme                  # what am I wearing?
+```
+
+Or open the studio (`Ctrl`+`/` in the window) and drag the wheel. Every control is live:
+the interface recolours as you move, and the choice is written to `.jarvis_theme.json`
+the moment you let go, so it is there next time — **in the terminal HUDs as well**. A
+colour is not a desktop-app setting; it is how you want J.A.R.V.I.S. to look.
+
+| Control | |
+|---|---|
+| **Wheel + brightness** | Hue around, saturation outward, lightness on the slider beneath. |
+| **Ground** | `Dark`, `Midnight` (true black, for OLED) or `Light`. |
+| **Colour in the background** | How much of your hue bleeds into the surfaces. 0 is neutral grey; 1 is unmistakably yours. |
+| **Panel separation** | How far the cards stand off the ground. |
+| **Glow** | The accent bloom behind live elements and the ambient light in the room. |
+| **Corner rounding** | 0 (severe) to 28 (soft). |
+| **Type** | System, Grotesk, Rounded, Serif or Monospace. |
+| **Secondary accent** | Tool cards and the second bloom. Derived 42° off your accent unless you set it. |
+
+### The two rules
+
+**Your seed is honoured exactly.** `--accent` is the colour you chose, byte for byte.
+A colour picker that quietly improves your choice is a colour picker nobody trusts.
+
+**Text is never allowed to be unreadable.** A seed can be any lightness, including ones
+that vanish against their background, so every value used for *text* is walked towards
+or away from the ground — hue and saturation intact — until it clears WCAG AA (4.5:1).
+That variant is published separately as `--accent-text`; the raw seed is left alone.
+
+This is tested rather than asserted. `tests/test_theme.py` derives a full interface from
+the eight most awkward seeds — pure black, pure white, yellow, pure blue, mid grey, full
+magenta — on all three grounds, and checks every text colour against its background. It
+does the same for all fourteen presets and for sixty random `surprise` themes.
+
+```
+python main.py --theme "#b6ff3d"      # lime, and everything follows
+python main.py --theme surprise
+```
+
+The terminal front ends get the same treatment: the derived colours are registered as a
+`custom` palette with Rich and with Textual, both of which take `#rrggbb` wherever they
+take a colour name. One derivation, three front ends. A fresh install with no theme file
+keeps the hand-tuned palettes it shipped with.
 
 ---
 
@@ -671,10 +791,18 @@ pip install pytest pytest-asyncio
 pytest -q
 ```
 
-Forty tests, no Ollama daemon, no microphone, well under a minute. The model is
-a scripted fake and the HUD is driven through Textual's pilot, so the suite
-covers streaming, tool parallelism, cancellation, the transcript, the modal
-dialogs and the whole boot sequence.
+One hundred and ninety-two tests, no Ollama daemon, no microphone, no browser,
+well under two minutes. The model is a scripted fake and the HUD is driven
+through Textual's pilot, so the suite covers streaming, tool parallelism,
+cancellation, the transcript, the modal dialogs and the whole boot sequence.
+
+The desktop app is driven over its own HTTP API with `urllib`, exactly as the
+front end drives it, so a passing suite means the front end has something real
+to talk to. That includes the security properties — no token, wrong token,
+a forged `Host`, a cross-origin request and `../` in a static path are each
+asserted to be refused. The colour engine is checked by arithmetic rather than
+against fixed hex values: every derived text colour must clear WCAG AA against
+its own background, for the eight most awkward seeds on all three grounds.
 
 ---
 
@@ -723,8 +851,13 @@ jarvis/
   daemon.py          The background wake listener
   ui.py              The classic HUD: pinned status strip above a scrolling shell
   tui.py             The full-screen HUD: transcript, instruments, modals
+  desktop.py         The desktop HUD: local server, event stream, window
+  theme.py           The colour engine: one seed in, a whole interface out
+  web/               The desktop front end: one page, one stylesheet, one script
   prompts.py         System prompt and personality
-tests/               Engine, HUD and boot-sequence tests; no daemon, no microphone
+jarvis-desktop       Launcher script (jarvis-desktop.bat on Windows)
+tests/               Engine, HUD, colour, desktop and boot tests; no daemon, no
+                     microphone, no browser
 ```
 
 The import graph is strictly acyclic. `config` sits at the bottom; `monitor`, `ui`, `tui`,
@@ -733,9 +866,17 @@ The import graph is strictly acyclic. `config` sits at the bottom; `monitor`, `u
 duck-typed and always optional. `tui.py` presents exactly the interface `ui.py` presents,
 method for method, so the agent, the monitor, the voice system and the permission broker
 bind to whichever display was chosen without knowing which one they got — and `engine.py`
-subclasses `core.py` rather than replacing it, so a turn behaves the same on either path. Every module degrades rather than raising: no microphone
+subclasses `core.py` rather than replacing it, so a turn behaves the same on either path.
+
+`desktop.py` is the third front end and joins on the same terms: `DesktopHUD` presents
+that identical interface, so the agent has no idea it is not talking to a terminal, and
+`theme.py` sits beside `config` at the bottom of the graph importing nothing but the
+standard library — which is why one derivation can serve Rich, Textual and CSS at once.
+
+Every module degrades rather than raising: no microphone
 means a text TUI, no Ollama means diagnostics and protocols still work, no compiler for a
-language means a clear refusal with an install hint.
+language means a clear refusal with an install hint, and a desktop app with no browser to
+open prints its address and waits.
 
 ---
 
