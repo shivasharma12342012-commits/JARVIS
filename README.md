@@ -20,7 +20,9 @@ languages including Hindi, Bengali, Telugu, Marathi and Tamil.
 
 | | |
 |---|---|
-| **Desktop app** | `jarvis-desktop` opens a real window: a graphical transcript, instrument cards, live machine gauges, a command palette and a colour studio. Runs on the standard library alone — no Electron, no bundle, no extra install. |
+| **Desktop app** | `jarvis-desktop` opens a real three-pane window: sessions and a workspace tree on the left, the conversation in the middle, and a preview rail on the right that holds a code viewer, the live agentic terminal and the instruments. Runs on the standard library alone — no Electron, no bundle, no extra install. |
+| **Code section** | A file browser and a syntax-highlighted viewer, sandboxed to the workspace. Open-file tabs, a line-number gutter, breadcrumbs, soft wrap, copy, and *Ask about this* to drop the path straight into the composer. |
+| **The terminal, in the app** | The agentic HUD's own grammar — `⏺` for what J.A.R.V.I.S. did, `⎿` for what came back — streaming live in its own tab. The terminal front end is not replaced by the window; it is reproduced in it, and still runs on its own. |
 | **Any colour you like** | Not four palettes: *any* colour. Drag a wheel or type `#ff8c42`, and the entire interface — backgrounds, surfaces, borders, gauges, the reactor — is re-derived from that one seed, stays readable by WCAG AA, and is remembered. `/theme violet` works in the terminal too. |
 | **Full-screen HUD** | The whole terminal, in Claude Code's grammar: a scrollable transcript, replies that arrive word by word, instrument cards that spin while they run and resolve in place, and a working line that says what it is doing and how to stop it. It opens on a greeting that has read the machine first. `--classic` restores the old pinned strip. |
 | **Live keywords** | `talk` and `quiet` act the moment you send them, and are coloured as you type them so you can see it before you press enter. |
@@ -533,20 +535,81 @@ Inside a session already running in the terminal, `/desktop` opens a window onto
 typed in the window arrives exactly as if it had been typed in the terminal, and
 everything J.A.R.V.I.S. says appears in both. `/desktop close` puts it away.
 
-### What is in the window
+### The window
+
+Three panes, two draggable seams, a status bar. The shape is Hermes Desktop's, because
+Hermes got it right: chat first, with a preview rail on the right so reading a file never
+costs you your place in the conversation.
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│ ●●●  ⬤ session name                        [READY]   ◍  ☰  ▤             │
+├───────────────┬────────────────────────────────┬─────────────────────────┤
+│ + New session │                                │  Code │ Terminal │ Sys  │
+│               │   you ────────────────────     │ ┌─────────────────────┐ │
+│ SESSIONS      │                                │ │ theme.py × app.css  │ │
+│  • current    │   ⏺ read_file                  │ ├─────────────────────┤ │
+│               │     713 lines, 31.8 KB         │ │ J.A.R.V.I.S / jarvis│ │
+│ WORKSPACE   ⟳ │                                │ ├─────────────────────┤ │
+│  ▾ jarvis     │   J  streaming reply…          │ │  1  """Colour engine │ │
+│    ▸ web      │      ┌───────────────────┐     │ │  2                  │ │
+│      theme.py │      │ python      Copy  │     │ │  3  One seed colour │ │
+│      tui.py   │      │ def background(): │     │ │  4                  │ │
+│  ▸ tests      │      └───────────────────┘     │ └─────────────────────┘ │
+│               │  ┌──────────────────────────┐  │ python · 713 lines      │
+│ ~/J.A.R.V.I.S │  │ Ask anything…         →  │  │ Wrap  Copy  Ask about   │
+├───────────────┴──────────────────────────────┴──────────────────────────┤
+│ ● Ready │ llama3.1:8b │ ~/J.A.R.V.I.S.   theme.py · 713 lines  cpu 34% ● │
+└──────────────────────────────────────────────────────────────────────────┘
+```
 
 | | |
 |---|---|
+| **Sidebar** | Sessions, and a lazily-loaded workspace tree with file sizes. Click a file to open it in the code view. |
 | **Transcript** | Replies stream in word by word behind a caret, then settle into rendered Markdown — headings, lists, tables, quotes, and code blocks with a Copy button. |
 | **Instrument cards** | Every tool call appears as a card that spins while it runs and resolves in place with its reading. |
-| **Machine gauges** | Live CPU, memory, disk and battery, plus a per-core strip, fed by the same ambient monitor the terminal uses. |
+| **Code** | Open-file tabs, breadcrumbs, a sticky line-number gutter that does not select with the code, syntax colouring drawn from your own theme, soft wrap, and *Ask about this*. |
+| **Terminal** | The agentic HUD, live, in the app. Same events as the transcript, rendered in the terminal's grammar. |
+| **System** | Live CPU, memory, disk and battery, a per-core strip, the model, the instruments and the protocols. |
 | **Permission cards** | The consent layer, as a card with *Allow once* / *Always allow* / *Deny*. Nothing reaches outside the workspace without one. |
-| **Command palette** | `Ctrl`+`K` for every command and every protocol, searchable. |
+| **Status bar** | State, model, workspace root, open file, last turn's latency, live CPU, and whether the event stream is connected. |
+| **Command palette** | `Ctrl`+`K` for every command, every protocol and every rail view. |
 | **Colour studio** | `Ctrl`+`/`. The next section. |
 
 Keys: `Enter` sends, `Shift`+`Enter` newlines, `/` opens command completion, `Ctrl`+`K`
-the palette, `Ctrl`+`/` the colours, `Ctrl`+`B` the instrument rail, `Esc` interrupts.
-Start typing anywhere and the composer takes it.
+the palette, `Ctrl`+`/` the colours, `Ctrl`+`B` the rail, `Ctrl`+`\` the sidebar,
+`Ctrl`+`1/2/3` the rail views, `Esc` interrupts. Start typing anywhere and the composer
+takes it. Both seams drag, and remember their width.
+
+### The code section
+
+The file browser and the viewer see the workspace — `WORKSPACE_ROOT`, the same root the
+`file_ops` tool is bounded by — and nothing else. Every path the window asks for is
+resolved, symlinks and `..` and all, and then checked against that root before a single
+byte is read. `tests/test_desktop.py` asserts the refusals directly: `../`, an absolute
+path, a nested escape, and a symlink pointing out of the tree.
+
+Binary files are reported rather than decoded, long files are truncated and say so, and
+`__pycache__`, `.git`, `node_modules` and their friends never appear in a listing. An
+extensionless script is coloured from its shebang, because `jarvis-desktop` is one.
+
+The highlighter is small and deliberately generic — one tokeniser, a keyword list per
+language, and **your** colours rather than a palette of its own. It runs on escaped text
+and emits nothing but `<span class="tok-…">`, so a file full of angle brackets is
+coloured, never executed; the round trip is verified to return the source byte for byte.
+
+### The terminal, still
+
+You asked for the agentic terminal to stay, and it does — in both senses.
+
+The full-screen Textual HUD is untouched: `python main.py` still opens it, `/desktop`
+opens a window *onto that same session*, and closing the window hands the terminal its
+HUD back. One agent core, several surfaces, exactly as before.
+
+And the window has its own Terminal tab that renders the same event stream in the HUD's
+grammar: `⏺` opening anything J.A.R.V.I.S. did or said, `⎿` hanging the result under it,
+`›` marking what you typed. Markdown is flattened to prose there — fenced code keeps its
+body verbatim, so `a * b * c` does not quietly lose its operators to an italics rule.
 
 ### How it is built
 
@@ -791,7 +854,7 @@ pip install pytest pytest-asyncio
 pytest -q
 ```
 
-One hundred and ninety-two tests, no Ollama daemon, no microphone, no browser,
+Two hundred and thirteen tests, no Ollama daemon, no microphone, no browser,
 well under two minutes. The model is a scripted fake and the HUD is driven
 through Textual's pilot, so the suite covers streaming, tool parallelism,
 cancellation, the transcript, the modal dialogs and the whole boot sequence.
@@ -800,9 +863,11 @@ The desktop app is driven over its own HTTP API with `urllib`, exactly as the
 front end drives it, so a passing suite means the front end has something real
 to talk to. That includes the security properties — no token, wrong token,
 a forged `Host`, a cross-origin request and `../` in a static path are each
-asserted to be refused. The colour engine is checked by arithmetic rather than
-against fixed hex values: every derived text colour must clear WCAG AA against
-its own background, for the eight most awkward seeds on all three grounds.
+asserted to be refused, and so are the workspace escapes the code section could
+otherwise become — `../`, absolute paths, nested traversal and out-of-tree
+symlinks. The colour engine is checked by arithmetic rather than against fixed
+hex values: every derived text colour must clear WCAG AA against its own
+background, for the eight most awkward seeds on all three grounds.
 
 ---
 

@@ -640,27 +640,34 @@ function streamEnd(finalText, interim) {
    Live connection
    ============================================================================= */
 const HANDLERS = {
-  user: (d) => Transcript.message('user', d.text, false),
-  agent: (d) => Transcript.message('agent', d.text, d.markdown !== false),
-  system: (d) => Transcript.note(d.text, d.level),
+  user: (d) => { Transcript.message('user', d.text, false); Term.user(d.text); },
+  agent: (d) => {
+    Transcript.message('agent', d.text, d.markdown !== false);
+    Term.line('agent', BULLET, Term.flatten(d.text));
+  },
+  system: (d) => { Transcript.note(d.text, d.level); Term.system(d.text, d.level); },
   interim: (d) => { if (d.text) Transcript.thought(d.text); },
-  thought: (d) => { if (d.text) Transcript.thought(d.text); },
-  tool_start: (d) => Transcript.toolStart(d.name, d.arguments),
-  tool_end: (d) => Transcript.toolEnd(d.name, d.ok, d.summary),
+  thought: (d) => { if (d.text) { Transcript.thought(d.text); Term.thought(d.text); } },
+  tool_start: (d) => { Transcript.toolStart(d.name, d.arguments); Term.toolStart(d.name, d.arguments); },
+  tool_end: (d) => { Transcript.toolEnd(d.name, d.ok, d.summary); Term.toolEnd(d.name, d.ok, d.summary); },
   alert: (d) => {
     Transcript.note(d.title + ': ' + d.text, d.severity === 'critical' ? 'error' : 'warn');
     toast(d.title);
   },
   code: (d) => Transcript.message('agent', '```' + (d.language || '') + '\n' + d.code + '\n```', true),
   table: (d) => Transcript.table(d.title, d.columns, d.rows),
-  clear: () => Transcript.clear(),
-  stream_begin: () => streamBegin(),
-  token: (d) => streamToken(d.text),
-  stream_end: (d) => streamEnd(d.text, d.interim),
+  clear: () => { Transcript.clear(); $('term').innerHTML = ''; },
+  stream_begin: () => { streamBegin(); Term.streamBegin(); },
+  token: (d) => { streamToken(d.text); Term.streamToken(d.text); },
+  stream_end: (d) => { streamEnd(d.text, d.interim); Term.streamEnd(d.text); },
   state: (d) => setState(d.state),
   telemetry: (d) => Gauges.update(d),
-  metrics: (d) => { if (d.summary) $('metrics-line').textContent = d.summary; },
-  model_status: (d) => { $('model-name').textContent = d.text; },
+  metrics: (d) => {
+    if (!d.summary) return;
+    $('metrics-line').textContent = d.summary;
+    $('sb-metrics').textContent = d.summary;
+  },
+  model_status: (d) => { $('model-name').textContent = d.text; $('sb-model').textContent = d.text; },
   voice_status: (d) => { $('machine-note').textContent = d.text; },
   protocol: (d) => { if (d.name) toast('Protocol: ' + d.name); },
   warm: () => {},
@@ -689,8 +696,14 @@ function connect() {
     });
   });
 
-  source.onopen = () => { retryDelay = 700; };
+  source.onopen = () => {
+    retryDelay = 700;
+    $('sb-link').textContent = 'live';
+    $('sb-link').classList.remove('down');
+  };
   source.onerror = () => {
+    $('sb-link').textContent = 'reconnecting';
+    $('sb-link').classList.add('down');
     // EventSource reconnects on its own, but only for transport hiccups. A
     // server that has gone away needs a deliberate retry with a backoff.
     if (source.readyState === EventSource.CLOSED) {
@@ -706,9 +719,13 @@ function setState(next) {
     idle: 'Ready', listening: 'Listening', thinking: 'Thinking',
     speaking: 'Speaking', working: 'Working',
   };
-  $('status-label').textContent = labels[next] || next || 'Ready';
+  const label = labels[next] || next || 'Ready';
+  $('status-label').textContent = label;
+  $('sb-state').textContent = '';
+  $('sb-state').append(el('i', 'sb-dot'), document.createTextNode(' ' + label));
   state.busy = !!next && next !== 'idle';
   $('btn-stop').hidden = !state.busy;
+  Term.state(next);
 }
 
 /* =============================================================================
@@ -741,6 +758,10 @@ const Gauges = {
       if (cell && cell.firstChild) cell.firstChild.style.height = clamp(value, 0, 100) + '%';
     });
 
+    if (data.cpu != null) {
+      $('sb-cpu').textContent = 'cpu ' + Math.round(data.cpu) + '%' +
+        (data.ram != null ? ' · mem ' + Math.round(data.ram) + '%' : '');
+    }
     if (data.platform || data.processes != null) {
       const uptime = data.uptime ? ', up ' + Math.floor(data.uptime / 3600) + 'h' : '';
       const processes = data.processes != null ? ' - ' + data.processes + ' processes' : '';
@@ -925,7 +946,11 @@ const Palette = {
     })).concat([
       { label: 'Colours', what: 'Open the theme studio', run: () => Studio.show() },
       { label: 'Surprise me', what: 'A random theme that still looks good', run: () => Studio.push({ surprise: true }) },
-      { label: 'Instruments panel', what: 'Show or hide the right-hand rail', run: () => toggleRail() },
+      { label: 'Code', what: 'Show the code view', run: () => Rail.show('code') },
+      { label: 'Terminal', what: 'Show the agentic terminal', run: () => Rail.show('terminal') },
+      { label: 'System', what: 'Show instruments and machine gauges', run: () => Rail.show('system') },
+      { label: 'Preview rail', what: 'Show or hide the right-hand rail', run: () => Shell.toggle('rail') },
+      { label: 'Sidebar', what: 'Show or hide the left sidebar', run: () => Shell.toggle('sidebar') },
     ], (BOOT.protocols || []).map((name) => ({
       label: name, what: 'Run this protocol', run: () => Composer.send('/protocol ' + name),
     })));
@@ -987,6 +1012,671 @@ const Palette = {
 };
 
 /* =============================================================================
+   The shell
+
+   Three panes and two draggable seams. Widths live in CSS custom properties on
+   :root, so a drag is one property write per frame and the grid does the rest —
+   no layout maths in JavaScript, and nothing to keep in sync.
+   ============================================================================= */
+const Shell = {
+  MIN: { sidebar: 180, rail: 300 },
+  MAX_FRACTION: 0.55,          // no pane may take more than this much of the window
+
+  init() {
+    this.node = $('shell');
+    this.restore();
+    this.seam('seam-left', 'sidebar', 1);
+    this.seam('seam-right', 'rail', -1);
+    // Transitions are added only after the first paint, so a restored layout
+    // appears at its remembered width rather than sliding into it.
+    requestAnimationFrame(() => this.node.classList.add('animate'));
+  },
+
+  read(key, fallback) {
+    try {
+      const saved = Number(localStorage.getItem('jarvis.' + key));
+      return Number.isFinite(saved) && saved > 0 ? saved : fallback;
+    } catch (err) { return fallback; }
+  },
+
+  write(key, value) {
+    try { localStorage.setItem('jarvis.' + key, String(value)); } catch (err) { /* private mode */ }
+  },
+
+  restore() {
+    const root = document.documentElement;
+    root.style.setProperty('--sidebar-width', this.read('sidebar', 248) + 'px');
+    root.style.setProperty('--rail-width', this.read('rail', 420) + 'px');
+    // Both panes start open on a window with room, closed on one without.
+    const wide = window.innerWidth;
+    this.set('sidebar', this.read('sidebar-open', wide > 1180 ? 1 : 0) === 1);
+    this.set('rail', this.read('rail-open', wide > 1100 ? 1 : 0) === 1);
+  },
+
+  set(which, open) {
+    this.node.classList.toggle('no-' + which, !open);
+    $(which === 'sidebar' ? 'btn-sidebar' : 'btn-rail').classList.toggle('on', open);
+    this.write(which + '-open', open ? 1 : 0);
+  },
+
+  toggle(which) {
+    this.set(which, this.node.classList.contains('no-' + which));
+  },
+
+  open(which) {
+    if (this.node.classList.contains('no-' + which)) this.set(which, true);
+  },
+
+  /* `direction` is +1 when the pane grows to the right (the sidebar) and -1
+     when it grows to the left (the rail). Width is measured from the window
+     edge rather than from a stored start value, which is what stops a drag
+     drifting when the pointer leaves and re-enters. */
+  seam(id, which, direction) {
+    const handle = $(id);
+    const variable = '--' + which + '-width';
+    let dragging = false;
+
+    const apply = (clientX) => {
+      const raw = direction > 0 ? clientX : window.innerWidth - clientX;
+      const width = clamp(raw, this.MIN[which], window.innerWidth * this.MAX_FRACTION);
+      document.documentElement.style.setProperty(variable, Math.round(width) + 'px');
+    };
+
+    handle.addEventListener('pointerdown', (event) => {
+      dragging = true;
+      handle.classList.add('active');
+      document.body.classList.add('dragging');
+      // Suspend the grid transition for the duration, or the pane lags the
+      // pointer by a quarter second and the drag feels like it is on elastic.
+      this.node.classList.remove('animate');
+      handle.setPointerCapture(event.pointerId);
+      event.preventDefault();
+    });
+
+    handle.addEventListener('pointermove', (event) => {
+      if (dragging) apply(event.clientX);
+    });
+
+    const release = () => {
+      if (!dragging) return;
+      dragging = false;
+      handle.classList.remove('active');
+      document.body.classList.remove('dragging');
+      this.node.classList.add('animate');
+      const current = parseInt(getComputedStyle(document.documentElement).getPropertyValue(variable), 10);
+      if (Number.isFinite(current)) this.write(which, current);
+    };
+    handle.addEventListener('pointerup', release);
+    handle.addEventListener('pointercancel', release);
+
+    // Keyboard resize, because a drag handle nobody can reach is not a control.
+    handle.addEventListener('keydown', (event) => {
+      const step = event.shiftKey ? 40 : 12;
+      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+      event.preventDefault();
+      const current = parseInt(getComputedStyle(document.documentElement).getPropertyValue(variable), 10) || 0;
+      const delta = (event.key === 'ArrowRight' ? step : -step) * direction;
+      const width = clamp(current + delta, this.MIN[which], window.innerWidth * this.MAX_FRACTION);
+      document.documentElement.style.setProperty(variable, Math.round(width) + 'px');
+      this.write(which, Math.round(width));
+    });
+  },
+};
+
+/* =============================================================================
+   The preview rail
+   ============================================================================= */
+const Rail = {
+  view: 'code',
+
+  init() {
+    document.querySelectorAll('.rail-tab').forEach((tab) => {
+      tab.onclick = () => this.show(tab.dataset.view);
+    });
+  },
+
+  show(view) {
+    this.view = view;
+    Shell.open('rail');
+    document.querySelectorAll('.rail-tab').forEach((tab) => {
+      const on = tab.dataset.view === view;
+      tab.classList.toggle('on', on);
+      tab.setAttribute('aria-selected', on ? 'true' : 'false');
+      if (on) this.unmark(view);
+    });
+    document.querySelectorAll('.rail-view').forEach((panel) => {
+      panel.classList.toggle('on', panel.id === 'view-' + view);
+    });
+    if (view === 'terminal') Term.toBottom(true);
+  },
+
+  /* A dot on a tab that has something new while you are looking elsewhere. */
+  mark(view) {
+    if (this.view === view) return;
+    const tab = document.querySelector('.rail-tab[data-view="' + view + '"]');
+    if (tab && !tab.querySelector('.pip')) tab.appendChild(el('span', 'pip'));
+  },
+
+  unmark(view) {
+    const tab = document.querySelector('.rail-tab[data-view="' + view + '"]');
+    const pip = tab && tab.querySelector('.pip');
+    if (pip) pip.remove();
+  },
+};
+
+/* =============================================================================
+   The workspace tree
+
+   Lazily loaded: a directory is fetched the first time it is opened, and the
+   server only ever answers for paths inside the workspace.
+   ============================================================================= */
+const FOLDER_ICON = 'M3 7a2 2 0 0 1 2-2h3.5l2 2H19a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z';
+const FILE_ICON = 'M6 3h7l5 5v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM13 3v5h5';
+
+const Tree = {
+  open: new Set(),
+
+  init() {
+    $('btn-tree-refresh').onclick = () => this.reload();
+    this.reload();
+  },
+
+  reload() {
+    this.known = new Map();
+    $('tree').innerHTML = '';
+    this.load('', $('tree'));
+  },
+
+  async load(path, host) {
+    let data;
+    try {
+      data = await api('/api/files?path=' + encodeURIComponent(path));
+    } catch (err) {
+      host.appendChild(el('div', 'rail-note', 'The workspace could not be read.'));
+      return;
+    }
+    if (!data || data.error) {
+      host.appendChild(el('div', 'rail-note', (data && data.error) || 'Nothing there.'));
+      return;
+    }
+    (data.entries || []).forEach((entry) => host.appendChild(this.node(entry)));
+    if (data.truncated) host.appendChild(el('div', 'rail-note', 'Listing truncated.'));
+  },
+
+  node(entry) {
+    const wrap = el('div');
+    const row = el('button', 'row');
+    row.type = 'button';
+    row.setAttribute('role', 'treeitem');
+    row.title = entry.path;
+
+    if (entry.kind === 'dir') {
+      const twist = icon('M9 6l6 6-6 6', 'twist');
+      row.append(twist, icon(FOLDER_ICON, 'ficon'), el('span', 'fname', entry.name));
+    } else {
+      row.append(el('span', 'twist'), icon(FILE_ICON, 'ficon'), el('span', 'fname', entry.name));
+      if (entry.size) row.append(el('span', 'fsize', bytes(entry.size)));
+    }
+    wrap.appendChild(row);
+
+    if (entry.kind === 'dir') {
+      const children = el('div', 'tree-children');
+      children.hidden = true;
+      wrap.appendChild(children);
+      row.onclick = () => {
+        const opening = children.hidden;
+        children.hidden = !opening;
+        row.classList.toggle('open', opening);
+        if (opening && !children.dataset.loaded) {
+          children.dataset.loaded = '1';
+          this.load(entry.path, children);
+        }
+      };
+    } else {
+      row.onclick = () => {
+        document.querySelectorAll('.tree .row.on').forEach((r) => r.classList.remove('on'));
+        row.classList.add('on');
+        Code.open(entry.path);
+      };
+    }
+    return wrap;
+  },
+};
+
+function icon(path, cls) {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('class', cls);
+  svg.setAttribute('fill', 'none');
+  svg.setAttribute('stroke', 'currentColor');
+  svg.setAttribute('stroke-width', '1.7');
+  svg.setAttribute('stroke-linecap', 'round');
+  svg.setAttribute('stroke-linejoin', 'round');
+  const shape = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  shape.setAttribute('d', path);
+  svg.appendChild(shape);
+  return svg;
+}
+
+function bytes(n) {
+  if (n < 1024) return n + 'B';
+  if (n < 1024 * 1024) return Math.round(n / 1024) + 'K';
+  return (n / 1024 / 1024).toFixed(1) + 'M';
+}
+
+/* =============================================================================
+   Syntax highlighting
+
+   Small and deliberately generic: one tokeniser, a per-language keyword list,
+   and the theme's own colours. It is not a parser and does not pretend to be —
+   it is here so a file is pleasant to read, and it degrades to plain text on
+   anything it does not recognise rather than mangling it.
+
+   It runs on escaped text and emits only spans with fixed class names, so a
+   file full of angle brackets is coloured, not executed.
+   ============================================================================= */
+const KEYWORDS = {
+  python: 'False None True and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield match case self cls',
+  javascript: 'async await break case catch class const continue debugger default delete do else export extends finally for from function if import in instanceof let new of return static super switch this throw try typeof var void while with yield true false null undefined',
+  typescript: 'abstract any as async await boolean break case catch class const continue declare default delete do else enum export extends finally for from function if implements import in instanceof interface let namespace new number of private protected public readonly return static string super switch this throw try type typeof var void while yield true false null undefined',
+  rust: 'as async await break const continue crate dyn else enum extern false fn for if impl in let loop match mod move mut pub ref return self Self static struct super trait true type unsafe use where while',
+  go: 'break case chan const continue default defer else fallthrough for func go goto if import interface map package range return select struct switch type var true false nil',
+  c: 'auto break case char const continue default do double else enum extern float for goto if inline int long register return short signed sizeof static struct switch typedef union unsigned void volatile while',
+  java: 'abstract assert boolean break byte case catch char class const continue default do double else enum extends final finally float for if implements import instanceof int interface long native new package private protected public return short static super switch synchronized this throw throws transient try void volatile while true false null',
+  bash: 'if then else elif fi for while do done case esac function return local export readonly declare source alias unset shift exit trap set',
+  sql: 'select from where insert into update delete create table drop alter add join left right inner outer on group by order having limit offset union all as and or not null distinct values set index primary key foreign references',
+  css: 'important media supports keyframes import charset font-face root and not or from to',
+  yaml: 'true false null yes no on off',
+  json: 'true false null',
+  html: '',
+  markdown: '',
+  text: '',
+};
+KEYWORDS.cpp = KEYWORDS.c + ' bool catch class constexpr delete explicit friend namespace new nullptr operator private protected public template this throw try typename using virtual';
+KEYWORDS.kotlin = KEYWORDS.java;
+KEYWORDS.ruby = 'def end class module if elsif else unless while until for in do return yield begin rescue ensure raise nil true false self require attr_accessor';
+KEYWORDS.php = KEYWORDS.c + ' echo function foreach as namespace use public private protected class extends implements new $this';
+KEYWORDS.toml = KEYWORDS.ini = KEYWORDS.yaml;
+KEYWORDS.swift = KEYWORDS.java;
+
+/* Line comment openers by language, so a comment is a comment and not a
+   division sign. */
+const LINE_COMMENT = {
+  python: '#', bash: '#', yaml: '#', toml: '#', ini: '#', r: '#', ruby: '#',
+  javascript: '//', typescript: '//', rust: '//', go: '//', c: '//', cpp: '//',
+  java: '//', kotlin: '//', swift: '//', php: '//', dart: '//', scala: '//',
+  sql: '--', lua: '--', haskell: '--',
+};
+
+function highlight(line, language) {
+  const escaped = esc(line);
+  if (!language || language === 'text' || language === 'markdown') return escaped;
+
+  const words = KEYWORDS[language];
+  const keywords = words ? new Set(words.split(' ')) : null;
+  const comment = LINE_COMMENT[language];
+
+  // One pass, left to right. Strings and comments swallow everything inside
+  // them, which is the only way a single regex sweep gets those two right.
+  let out = '';
+  let i = 0;
+  const n = escaped.length;
+
+  while (i < n) {
+    const rest = escaped.slice(i);
+
+    // Entities first, always. esc() has already turned & < > " ' into entities,
+    // and any rule that consumes one of those bytes on its own splits the
+    // entity in half — which reaches the screen as a literal `&quot;`.
+    const entity = rest.match(/^&(?:[a-z]+|#\d+);/);
+    if (entity && !rest.startsWith('&quot;') && !rest.startsWith('&#39;')) {
+      out += entity[0];
+      i += entity[0].length;
+      continue;
+    }
+
+    if (comment && rest.startsWith(esc(comment))) {
+      out += '<span class="tok-com">' + rest + '</span>';
+      break;
+    }
+    if (language === 'css' || language === 'c' || language === 'cpp' || language === 'javascript' ||
+        language === 'typescript' || language === 'java' || language === 'rust' || language === 'go') {
+      if (rest.startsWith('/*')) {
+        const close = rest.indexOf('*/');
+        const chunk = close === -1 ? rest : rest.slice(0, close + 2);
+        out += '<span class="tok-com">' + chunk + '</span>';
+        i += chunk.length;
+        continue;
+      }
+    }
+
+    const quote = rest.match(/^(&quot;|&#39;|`)/);
+    if (quote) {
+      const mark = quote[1];
+      let end = mark.length;
+      while (end < rest.length) {
+        if (rest.slice(end).startsWith('\\')) { end += 2; continue; }
+        if (rest.slice(end).startsWith(mark)) { end += mark.length; break; }
+        end += 1;
+      }
+      out += '<span class="tok-str">' + rest.slice(0, end) + '</span>';
+      i += end;
+      continue;
+    }
+
+    const number = rest.match(/^\b\d[\d_]*(\.\d+)?([eE][+-]?\d+)?\b|^0[xXbBoO][0-9a-fA-F_]+/);
+    if (number) {
+      out += '<span class="tok-num">' + number[0] + '</span>';
+      i += number[0].length;
+      continue;
+    }
+
+    const word = rest.match(/^[A-Za-z_$][A-Za-z0-9_$]*/);
+    if (word) {
+      const text = word[0];
+      const after = rest.slice(text.length).match(/^\s*\(/);
+      let cls = '';
+      if (keywords && keywords.has(text)) cls = 'tok-key';
+      else if (after) cls = 'tok-fn';
+      else if (/^[A-Z][A-Za-z0-9_]*$/.test(text)) cls = 'tok-type';
+      out += cls ? '<span class="' + cls + '">' + text + '</span>' : text;
+      i += text.length;
+      continue;
+    }
+
+    const punctuation = rest.match(/^[{}()[\];:,.+\-*/%=!|^~?@]+/);
+    if (punctuation) {
+      out += '<span class="tok-punc">' + punctuation[0] + '</span>';
+      i += punctuation[0].length;
+      continue;
+    }
+
+    out += rest[0];
+    i += 1;
+  }
+  return out;
+}
+
+/* =============================================================================
+   The code section
+
+   Open files live as tabs, each keeping its own scroll position. Rendering is
+   row-per-line so the gutter can be sticky and unselectable — copying a file
+   should give you the file, not the line numbers.
+   ============================================================================= */
+const Code = {
+  files: new Map(),      // path -> {name, language, content, lines, scroll}
+  current: null,
+
+  init() {
+    $('btn-code-copy').onclick = () => this.copy();
+    $('btn-code-ask').onclick = () => this.ask();
+    const wrap = $('btn-code-wrap');
+    try { this.wrapped = localStorage.getItem('jarvis.wrap') === '1'; } catch (err) { this.wrapped = false; }
+    this.applyWrap();
+    wrap.onclick = () => {
+      this.wrapped = !this.wrapped;
+      try { localStorage.setItem('jarvis.wrap', this.wrapped ? '1' : '0'); } catch (err) { /* private mode */ }
+      this.applyWrap();
+    };
+  },
+
+  applyWrap() {
+    $('code-host').classList.toggle('wrapped', this.wrapped);
+    $('btn-code-wrap').classList.toggle('on', this.wrapped);
+  },
+
+  async open(path, options) {
+    Rail.show('code');
+    if (this.files.has(path)) return this.select(path);
+
+    let data;
+    try {
+      data = await api('/api/file?path=' + encodeURIComponent(path));
+    } catch (err) {
+      toast('That file would not open.');
+      return;
+    }
+    if (!data || data.error) { toast((data && data.error) || 'That file would not open.'); return; }
+    if (data.binary) { toast(data.name + ' is a binary file.'); return; }
+
+    this.files.set(path, {
+      path: data.path, name: data.name, language: data.language,
+      content: data.content, lines: data.lines, truncated: data.truncated,
+      size: data.size, scroll: 0,
+    });
+    this.select(path);
+    if (options && options.quiet !== true) Rail.mark('code');
+  },
+
+  select(path) {
+    const file = this.files.get(path);
+    if (!file) return;
+    if (this.current && this.files.has(this.current)) {
+      this.files.get(this.current).scroll = $('code-scroll').scrollTop;
+    }
+    this.current = path;
+    this.renderTabs();
+    this.renderCrumbs(file);
+    this.renderBody(file);
+    $('sb-file').textContent = file.name + ' · ' + file.lines + ' lines';
+  },
+
+  close(path) {
+    this.files.delete(path);
+    if (this.current === path) {
+      this.current = null;
+      const next = this.files.keys().next();
+      if (next.done) this.blank(); else this.select(next.value);
+    } else {
+      this.renderTabs();
+    }
+  },
+
+  blank() {
+    $('code-empty').hidden = false;
+    $('code-scroll').hidden = true;
+    $('code-foot').hidden = true;
+    $('crumbs').innerHTML = '';
+    $('sb-file').textContent = '';
+    this.renderTabs();
+  },
+
+  renderTabs() {
+    const strip = $('tabstrip');
+    strip.innerHTML = '';
+    this.files.forEach((file, path) => {
+      const tab = el('button', 'ftab' + (path === this.current ? ' on' : ''));
+      tab.type = 'button';
+      tab.title = path;
+      tab.append(el('span', 'fname', file.name));
+      const close = el('span', 'close', '×');
+      close.onclick = (event) => { event.stopPropagation(); this.close(path); };
+      tab.append(close);
+      tab.onclick = () => this.select(path);
+      strip.appendChild(tab);
+    });
+  },
+
+  renderCrumbs(file) {
+    const crumbs = $('crumbs');
+    crumbs.innerHTML = '';
+    const parts = String(file.path || file.name).split('/');
+    crumbs.appendChild(el('span', '', BOOT.workspaceName || 'workspace'));
+    parts.forEach((part, i) => {
+      crumbs.appendChild(el('span', 'sep', '/'));
+      crumbs.appendChild(el('span', i === parts.length - 1 ? 'leaf' : '', part));
+    });
+  },
+
+  renderBody(file) {
+    $('code-empty').hidden = true;
+    $('code-scroll').hidden = false;
+    $('code-foot').hidden = false;
+
+    const body = $('code-body');
+    body.innerHTML = '';
+    const lines = file.content.split('\n');
+    // A document fragment keeps a four-thousand-line file to one reflow.
+    const batch = document.createDocumentFragment();
+    lines.forEach((line, i) => {
+      const row = document.createElement('tr');
+      const gutter = document.createElement('td');
+      gutter.className = 'ln';
+      gutter.textContent = String(i + 1);
+      const src = document.createElement('td');
+      src.className = 'src';
+      src.innerHTML = highlight(line, file.language) || '&nbsp;';
+      row.append(gutter, src);
+      batch.appendChild(row);
+    });
+    body.appendChild(batch);
+
+    $('code-meta').textContent =
+      file.language + ' · ' + file.lines + ' lines · ' + bytes(file.size) +
+      (file.truncated ? ' · truncated' : '');
+    $('code-scroll').scrollTop = file.scroll || 0;
+  },
+
+  async copy() {
+    const file = this.files.get(this.current);
+    if (!file) return;
+    try {
+      await navigator.clipboard.writeText(file.content);
+      toast('Copied ' + file.name + '.');
+    } catch (err) { toast('The clipboard refused that.'); }
+  },
+
+  ask() {
+    const file = this.files.get(this.current);
+    if (!file) return;
+    Composer.input.value = 'About `' + file.path + '`: ';
+    Composer.input.focus();
+    Composer.autosize();
+  },
+};
+
+/* =============================================================================
+   The agentic terminal, inside the app
+
+   The full-screen HUD's grammar, rendered from the same event stream the chat
+   pane reads: a bullet for anything J.A.R.V.I.S. did or said, its reading
+   hanging underneath, a caret for what the operator typed. This does not
+   replace the terminal front end — that still runs, on its own, in a real
+   terminal. It reproduces it here so the window is not a lesser view of the
+   same session.
+   ============================================================================= */
+const BULLET = '⏺';    // the filled circle that opens an action
+const BRANCH = '⎿';    // the elbow that hangs a result under it
+const CARET  = '›';    // what the operator typed
+
+const Term = {
+  atBottom: true,
+  streaming: null,
+
+  init() {
+    this.node = $('term');
+    this.node.addEventListener('scroll', () => {
+      const gap = this.node.scrollHeight - this.node.scrollTop - this.node.clientHeight;
+      this.atBottom = gap < 40;
+    }, { passive: true });
+    $('btn-term-clear').onclick = () => { this.node.innerHTML = ''; };
+    this.line('system', BULLET, 'J.A.R.V.I.S. online. This is the same session as the terminal.');
+  },
+
+  line(kind, glyph, text) {
+    const row = el('div', 'tline t-' + kind);
+    row.append(el('span', 'glyph', glyph), el('span', 'txt', text));
+    this.node.appendChild(row);
+    this.trim();
+    this.toBottom();
+    Rail.mark('terminal');
+    return row;
+  },
+
+  /* An unbounded terminal is a memory leak with a scrollbar. */
+  trim() {
+    const excess = this.node.children.length - 600;
+    for (let i = 0; i < excess; i++) this.node.removeChild(this.node.firstChild);
+  },
+
+  toBottom(force) {
+    if (!force && !this.atBottom) return;
+    this.node.scrollTop = this.node.scrollHeight;
+  },
+
+  user(text) { this.line('user', CARET, text); },
+  system(text, level) {
+    this.line(level === 'error' ? 'error' : level === 'warn' ? 'warn' : 'system', BULLET, text);
+  },
+  thought(text) { this.line('think', BRANCH, text); },
+
+  toolStart(name, args) {
+    const detail = (args && Object.keys(args).length) ? ' ' + JSON.stringify(args) : '';
+    this.line('tool', BULLET, name + '(' + detail.trim() + ')');
+  },
+
+  toolEnd(name, ok, summary) {
+    this.line(ok ? 'result' : 'error', BRANCH, summary || (ok ? 'done' : 'failed'));
+  },
+
+  /* A terminal shows prose, not source. The full-screen HUD renders Markdown
+     through Rich; here the markers are simply stripped, which gets the same
+     readable result without a second renderer. Fenced blocks keep their body
+     and lose their fences, indented so they still read as code. */
+  flatten(text) {
+    // Fenced code comes out first and goes back in untouched. Stripping
+    // emphasis across a code block turns `a * b * c` into `a b c`, which is a
+    // worse lie than leaving the fences in.
+    const blocks = [];
+    const prose = String(text || '').replace(/```[a-zA-Z0-9]*\n?([\s\S]*?)```/g, (_, code) => {
+      blocks.push(code.replace(/\n$/, ''));
+      return '\u0000' + (blocks.length - 1) + '\u0000';
+    });
+    return prose
+      .replace(/^\s{0,3}#{1,6}\s+/gm, '')
+      .replace(/\*\*([^*]+)\*\*/g, '$1')
+      .replace(/(^|[\s(])\*([^*\n]+)\*(?=$|[\s).,;:!?])/g, '$1$2')
+      .replace(/`([^`\n]+)`/g, '$1')
+      .replace(/^\s*>\s?/gm, '  ')
+      .replace(/\u0000(\d+)\u0000/g, (_, i) => blocks[Number(i)] || '')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  },
+
+  streamBegin() {
+    this.streaming = this.line('agent', BULLET, '');
+    this.buffer = '';
+  },
+
+  streamToken(token) {
+    if (!this.streaming) this.streamBegin();
+    this.buffer += token;
+    const txt = this.streaming.querySelector('.txt');
+    txt.textContent = this.buffer;
+    txt.appendChild(el('span', 'term-cursor'));
+    this.toBottom();
+  },
+
+  streamEnd(text) {
+    if (!this.streaming) {
+      if (text) this.line('agent', BULLET, this.flatten(text));
+      return;
+    }
+    const final = this.flatten(text || this.buffer);
+    this.streaming.querySelector('.txt').textContent = final;
+    if (!final.trim()) this.streaming.remove();
+    this.streaming = null;
+    this.buffer = '';
+    this.toBottom();
+  },
+
+  state(next) {
+    $('term-title').textContent = 'jarvis · ' + (next || 'idle');
+  },
+};
+
+/* =============================================================================
    Chrome
    ============================================================================= */
 function toast(text) {
@@ -998,26 +1688,56 @@ function toast(text) {
   }, 2800);
 }
 
-function toggleRail() {
-  const open = $('shell-root').classList.toggle('rail-open');
-  $('btn-rail').classList.toggle('on', open);
-  try { localStorage.setItem('jarvis.rail', open ? '1' : '0'); } catch (err) { /* private mode */ }
-}
+const Sessions = {
+  items: [],
+
+  init() {
+    $('btn-new').onclick = () => this.create();
+    this.add('Current session', true);
+  },
+
+  add(label, active) {
+    const item = { label: label, at: Date.now() };
+    this.items.unshift(item);
+    this.render(active ? 0 : -1);
+  },
+
+  /* One agent core, many surfaces: starting a new session clears the shared
+     memory rather than forking a second assistant, which is what /clear does
+     in the terminal too. */
+  create() {
+    Composer.send('/clear');
+    this.items[0] = { label: 'Session ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), at: Date.now() };
+    this.render(0);
+    $('session-title').textContent = this.items[0].label;
+  },
+
+  render(activeIndex) {
+    const list = $('session-list');
+    list.innerHTML = '';
+    this.items.slice(0, 8).forEach((item, i) => {
+      const row = el('li', i === (activeIndex < 0 ? 0 : activeIndex) ? 'on' : '');
+      row.append(el('span', '', item.label));
+      list.appendChild(row);
+    });
+  },
+};
 
 const SUGGESTIONS = [
   'What is this machine doing right now?',
-  'Summarise the files in my workspace',
+  'Open jarvis/theme.py and explain the derivation',
   'Run a diagnostics sweep',
   'Make the interface violet',
 ];
 
 function boot() {
-  document.querySelector('.shell').id = 'shell-root';
-  $('brand-name').textContent = BOOT.agent || 'J.A.R.V.I.S.';
-  $('brand-sub').textContent = BOOT.fullName || '';
+  $('session-sub').textContent = BOOT.agent || 'J.A.R.V.I.S.';
   $('welcome-title').textContent = BOOT.title || 'Sir';
   $('model-name').textContent = BOOT.model || '-';
   $('model-host').textContent = BOOT.host || '';
+  $('sb-model').textContent = BOOT.model || '-';
+  $('sb-cwd').textContent = BOOT.workspace || '';
+  $('cwd-label').textContent = BOOT.workspace || '';
   document.title = (BOOT.agent || 'J.A.R.V.I.S.') + ' Desktop';
 
   const tools = BOOT.tools || [];
@@ -1037,30 +1757,34 @@ function boot() {
   });
 
   applyVariables(BOOT.variables);
+  Shell.init();
+  Rail.init();
   Transcript.init();
   Composer.init();
   Palette.init();
   Studio.init();
+  Code.init();
+  Term.init();
+  Tree.init();
+  Sessions.init();
   setState(BOOT.state || 'idle');
-
-  let railOpen = window.innerWidth > 1100;
-  try {
-    const saved = localStorage.getItem('jarvis.rail');
-    if (saved !== null) railOpen = saved === '1';
-  } catch (err) { /* private mode */ }
-  if (railOpen) toggleRail();
 
   $('btn-palette').onclick = () => Studio.toggle();
   $('btn-command').onclick = () => Palette.show();
-  $('btn-rail').onclick = () => toggleRail();
+  $('btn-rail').onclick = () => Shell.toggle('rail');
+  $('btn-sidebar').onclick = () => Shell.toggle('sidebar');
   $('scrim').onclick = () => Studio.hide();
 
   document.addEventListener('keydown', (event) => {
     const meta = event.ctrlKey || event.metaKey;
     if (meta && event.key.toLowerCase() === 'k') { event.preventDefault(); Palette.show(); }
     else if (meta && event.key === '/') { event.preventDefault(); Studio.toggle(); }
-    else if (meta && event.key.toLowerCase() === 'b') { event.preventDefault(); toggleRail(); }
-    else if (event.key === 'Escape') {
+    else if (meta && event.key.toLowerCase() === 'b') { event.preventDefault(); Shell.toggle('rail'); }
+    else if (meta && event.key === '\\') { event.preventDefault(); Shell.toggle('sidebar'); }
+    else if (meta && event.key >= '1' && event.key <= '3') {
+      event.preventDefault();
+      Rail.show(['code', 'terminal', 'system'][Number(event.key) - 1]);
+    } else if (event.key === 'Escape') {
       if (!$('palette-wrap').hidden) Palette.hide();
       else if (Studio.open) Studio.hide();
       else if (state.busy) { api('/api/interrupt', {}).catch(() => {}); toast('Interrupted.'); }
