@@ -201,7 +201,12 @@ class EventHub:
 
 #: Events not worth replaying to a window that opens later: they describe an
 #: instant, not a fact, and a stale one would be actively misleading.
-_EPHEMERAL_EVENTS = {"telemetry", "amplitude", "token", "heartbeat", "state"}
+_EPHEMERAL_EVENTS = {
+    "telemetry", "amplitude", "token", "heartbeat", "state",
+    # The shell keeps its own scrollback in the pane; replaying a thousand
+    # lines of it into a reloaded tab would be neither useful nor cheap.
+    "shell_out", "shell_done", "shell_exit",
+}
 
 
 # ══════════════════════════════════════════════════════════════════════════════════════
@@ -1090,11 +1095,36 @@ class _Handler(BaseHTTPRequestHandler):
         elif route == "/api/answer":
             resolved = self.app.hud.resolve(str(body.get("token") or ""), body.get("answer"))
             self._json({"ok": resolved})
+        elif route == "/api/shell":
+            self._json(self._shell_action(body))
         elif route == "/api/quit":
             self._json({"ok": True})
             self.app.request_stop()
         else:
             self._json({"error": "no such route"}, 404)
+
+    def _shell_action(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Run one line in the system shell, or steer it."""
+        session = self.app.shell()
+        if session is None:
+            return {"ok": False, "error": "the shell pane is switched off"}
+        if not session.available:
+            return {"ok": False, "error": "no shell was found on this machine"}
+
+        if body.get("restart"):
+            return dict({"ok": session.restart()}, **session.describe())
+        if body.get("interrupt"):
+            return {"ok": session.interrupt()}
+        if body.get("start"):
+            return dict({"ok": session.start()}, **session.describe())
+
+        line = body.get("input")
+        if line is None:
+            return {"ok": False, "error": "nothing to run"}
+        # Logged before it runs: a shell pane whose history is absent from the
+        # log file is a hole in the record of what happened this session.
+        LOG.info("shell: %s", str(line)[:400])
+        return {"ok": session.send(str(line))}
 
     # -- responses ----------------------------------------------------------------------
     def _page(self) -> None:
@@ -1310,6 +1340,10 @@ class DesktopApp:
         #: What the file browser and the code viewer may see: the workspace, and
         #: nothing outside it.
         self.workspace = Workspace()
+        #: The system shell behind the Terminal pane. Built lazily on first use,
+        #: so a session that never opens the pane never spawns a process.
+        self._shell: Any = None
+        self._shell_lock = threading.Lock()
         self.backend = backend or StandaloneBackend()
         self.backend.hud = self.hud
         self.host = host
@@ -1387,6 +1421,12 @@ class DesktopApp:
                 server.server_close()
             except Exception:
                 LOG.debug("Server did not close cleanly", exc_info=True)
+        if self._shell is not None:
+            try:
+                self._shell.stop()
+            except Exception:
+                LOG.debug("Shell did not close cleanly", exc_info=True)
+            self._shell = None
         try:
             self.backend.shutdown()
         except Exception:
@@ -1417,6 +1457,55 @@ class DesktopApp:
                 self.request_stop()
                 return
 
+    # -- the system shell -------------------------------------------------------------
+    @property
+    def shell_enabled(self) -> bool:
+        """Whether the operator has left the Terminal pane switched on."""
+        return bool(getattr(settings, "DESKTOP_SHELL_ENABLED", True))
+
+    def shell(self) -> Any:
+        """The shell session, built on first use. None when the pane is off.
+
+        Lazy on purpose: a session that never opens the Terminal pane never
+        spawns a shell process, and one that opens it once keeps the same
+        process — which is what makes ``cd`` and an activated virtualenv stick.
+        """
+        if not self.shell_enabled:
+            return None
+        with self._shell_lock:
+            if self._shell is not None:
+                return self._shell
+            from jarvis.shell import ShellSession
+
+            self._shell = ShellSession(
+                on_output=lambda line: self.hub.publish("shell_out", text=line),
+                on_done=lambda code, cwd: self.hub.publish("shell_done", code=code, cwd=cwd),
+                on_exit=lambda code: self.hub.publish("shell_exit", code=code),
+                cwd=self.workspace.root,
+            )
+            return self._shell
+
+    def shell_payload(self) -> dict[str, Any]:
+        """What the window needs to draw the pane before anything has run."""
+        if not self.shell_enabled:
+            return {"available": False, "disabled": True, "name": "", "prompt": "", "cwd": ""}
+        if self._shell is not None:
+            return self._shell.describe()
+        try:
+            from jarvis import shell as shell_mod
+
+            flavour = shell_mod.detect()
+        except Exception:
+            LOG.debug("Shell detection failed", exc_info=True)
+            return {"available": False, "name": "", "prompt": "", "cwd": ""}
+        return {
+            "available": flavour is not None,
+            "name": flavour.name if flavour else "",
+            "prompt": flavour.prompt if flavour else "",
+            "cwd": str(self.workspace.root),
+            "running": False,
+        }
+
     # -- the API's working parts ------------------------------------------------------
     def submit(self, text: str) -> None:
         """Hand one line from the window to whatever is driving the assistant."""
@@ -1438,6 +1527,9 @@ class DesktopApp:
             "standalone": False,
             "workspace": str(self.workspace.root),
             "workspaceName": self.workspace.root.name,
+            # So the shell prompt can shorten a path to ~ the way a shell does.
+            "home": str(Path.home()),
+            "shell": self.shell_payload(),
         }
         try:
             payload.update(self.backend.snapshot())

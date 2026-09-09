@@ -168,6 +168,13 @@ class Settings(BaseSettings):
     TEMP_ALERT_THRESHOLD: float = 85.0
     MONITOR_WATCH_BUILD_LOGS: bool = True
 
+    # -- Desktop ------------------------------------------------------------------
+    #: The shell pane in the desktop window. It is exactly as powerful as a
+    #: terminal, which is the point of it, and sits behind the same loopback +
+    #: token boundary as everything else the window can reach. Set false to
+    #: remove the pane and refuse the route outright.
+    DESKTOP_SHELL_ENABLED: bool = True
+
     # -- Tools --------------------------------------------------------------------
     WORKSPACE_ROOT: Path = PROJECT_ROOT
     FILE_OPS_MAX_BYTES: int = 200_000

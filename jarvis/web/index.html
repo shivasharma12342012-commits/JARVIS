@@ -6,105 +6,140 @@
 <meta name="color-scheme" content="dark light">
 <title>J.A.R.V.I.S.</title>
 <!-- The operator's colours, resolved server-side and inlined, so the very first
-     paint is already their theme. No flash of somebody else's cyan. -->
+     paint is already their theme. No flash of somebody else's grey. -->
 <style id="theme-vars">__JARVIS_THEME_CSS__</style>
 <link rel="stylesheet" href="/static/app.css?token=__JARVIS_TOKEN__">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='38' fill='none' stroke='%2322d3ee' stroke-width='8'/><circle cx='50' cy='50' r='16' fill='%2322d3ee'/></svg>">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='38' fill='none' stroke='%238b9099' stroke-width='7'/><circle cx='50' cy='50' r='15' fill='%238b9099'/></svg>">
 </head>
 <body>
 
-<!-- Two vast, slow-moving blooms of the accent colour behind everything. They are
-     the reason an arbitrary seed reads as a *designed* interface rather than a
-     recoloured one: the whole room is lit by the operator's choice. -->
+<!-- Two very large, very faint washes of the accent, sitting behind everything.
+     At the shipped glow of 0.10 they are all but invisible, which is the point:
+     they exist so that turning the glow up has somewhere to go, not so that the
+     default looks like a screensaver. -->
 <div class="ambience" aria-hidden="true">
   <span class="bloom bloom-a"></span>
   <span class="bloom bloom-b"></span>
-  <span class="grain"></span>
 </div>
 
-<!-- ── title bar ──────────────────────────────────────────────────────────── -->
+<!-- ══ title bar ══════════════════════════════════════════════════════════ -->
 <header class="titlebar">
-  <span class="lights" aria-hidden="true"><i></i><i></i><i></i></span>
-
-  <button class="icon-btn" id="btn-sidebar" title="Sidebar" aria-label="Toggle the sidebar">
-    <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></svg>
+  <button class="icon-btn sm" id="btn-sidebar" title="Sidebar  ·  Ctrl+\" aria-label="Toggle the sidebar">
+    <svg viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="2"/><path d="M9 4.5v15"/></svg>
+  </button>
+  <button class="icon-btn sm" id="btn-swap" title="Switch session" aria-label="Switch session">
+    <svg viewBox="0 0 24 24"><path d="M4 8h13l-3-3M20 16H7l3 3"/></svg>
   </button>
 
-  <div class="brand">
-    <span class="reactor" id="reactor" aria-hidden="true">
-      <svg viewBox="0 0 100 100">
-        <circle class="r-halo"  cx="50" cy="50" r="46"/>
-        <circle class="r-ring"  cx="50" cy="50" r="35"/>
-        <circle class="r-track" cx="50" cy="50" r="27"/>
-        <circle class="r-core"  cx="50" cy="50" r="13"/>
-        <g class="r-blades">
-          <path d="M50 20 L56 34 L44 34 Z"/><path d="M80 50 L66 56 L66 44 Z"/>
-          <path d="M50 80 L44 66 L56 66 Z"/><path d="M20 50 L34 44 L34 56 Z"/>
-        </g>
-      </svg>
-    </span>
-    <span class="brand-text">
-      <strong id="session-title">New session</strong>
-      <small id="session-sub">J.A.R.V.I.S.</small>
-    </span>
-  </div>
+  <span class="tb-title" id="session-title">New session</span>
 
-  <div class="status" id="status-chip" data-state="idle">
-    <span class="status-dot"></span>
-    <span class="status-label" id="status-label">Ready</span>
-  </div>
+  <span class="spacer"></span>
 
   <div class="titlebar-actions">
-    <button class="icon-btn" id="btn-palette" title="Theme studio  ·  Ctrl+/" aria-label="Open the theme studio">
-      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="7.5" r="1.6" class="fill"/><circle cx="16.5" cy="12" r="1.6" class="fill"/><circle cx="9" cy="16" r="1.6" class="fill"/></svg>
+    <button class="icon-btn sm" id="btn-rail" title="Panels  ·  Ctrl+B" aria-label="Toggle the right panel">
+      <svg viewBox="0 0 24 24"><rect x="3" y="4.5" width="8" height="15" rx="1.5"/><rect x="13" y="4.5" width="8" height="15" rx="1.5"/></svg>
     </button>
-    <button class="icon-btn" id="btn-command" title="Commands  ·  Ctrl+K" aria-label="Open the command palette">
+    <button class="icon-btn sm" id="btn-mute-all" title="Sound" aria-label="Sound">
+      <svg viewBox="0 0 24 24"><path d="M5 9.5v5h3l4 3.5v-12L8 9.5zM16 9.5a4 4 0 0 1 0 5"/></svg>
+    </button>
+    <button class="icon-btn sm" id="btn-keys" title="Keyboard shortcuts  ·  ?" aria-label="Keyboard shortcuts">
+      <svg viewBox="0 0 24 24"><rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6.5 10h.01M10 10h.01M13.5 10h.01M17 10h.01M8 14h8"/></svg>
+    </button>
+    <button class="icon-btn sm" id="btn-palette" title="Appearance  ·  Ctrl+/" aria-label="Appearance">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M18.4 5.6L17 7M7 17l-1.4 1.4"/></svg>
+    </button>
+    <button class="icon-btn sm" id="btn-command" title="Commands  ·  Ctrl+K" aria-label="Commands">
       <svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
     </button>
-    <button class="icon-btn" id="btn-rail" title="Preview rail  ·  Ctrl+B" aria-label="Toggle the preview rail">
-      <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M15 4v16"/></svg>
-    </button>
+  </div>
+
+  <span class="tb-divider"></span>
+  <div class="window-controls" aria-hidden="true">
+    <span class="wc" data-wc="min"><svg viewBox="0 0 12 12"><path d="M2 6h8"/></svg></span>
+    <span class="wc" data-wc="max"><svg viewBox="0 0 12 12"><rect x="2.5" y="2.5" width="7" height="7"/></svg></span>
+    <span class="wc close" data-wc="close"><svg viewBox="0 0 12 12"><path d="M3 3l6 6M9 3l-6 6"/></svg></span>
   </div>
 </header>
 
 <main class="shell" id="shell">
-  <!-- ── sidebar ───────────────────────────────────────────────────────────── -->
-  <nav class="sidebar" id="sidebar" aria-label="Sessions and workspace">
-    <button class="new-session" id="btn-new">
-      <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg> New session
-    </button>
+  <!-- ══ sidebar ═════════════════════════════════════════════════════════ -->
+  <nav class="sidebar" id="sidebar" aria-label="Navigation">
+    <div class="side-scroll">
+      <ul class="nav">
+        <li><button class="nav-item" id="btn-new">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.2"/><path d="M5.5 19.5a6.5 6.5 0 0 1 13 0"/></svg>
+          <span>New session</span><kbd class="hint">Ctrl</kbd><kbd class="hint">N</kbd>
+        </button></li>
+        <li><button class="nav-item" data-rail="system">
+          <svg viewBox="0 0 24 24"><path d="M12 3l2.4 5.2 5.6.7-4.1 3.9 1.1 5.6L12 15.8 6.9 18.4 8 12.8 3.9 8.9l5.6-.7z"/></svg>
+          <span>Capabilities</span><span class="tally" id="cap-count">0</span>
+        </button></li>
+        <li><button class="nav-item" data-rail="terminal">
+          <svg viewBox="0 0 24 24"><path d="M4 5.5h16v10a2 2 0 0 1-2 2H9l-4 3v-3H4z"/></svg>
+          <span>Messaging</span>
+        </button></li>
+        <li><button class="nav-item" data-rail="code">
+          <svg viewBox="0 0 24 24"><path d="M6.5 3.5h7l5 5v12h-12z"/><path d="M13.5 3.5v5h5"/></svg>
+          <span>Artifacts</span><span class="tally" id="artifact-count">0</span>
+        </button></li>
+      </ul>
 
-    <section class="side-block">
-      <h2>Sessions</h2>
-      <ul class="sessions" id="session-list"></ul>
-    </section>
+      <label class="search">
+        <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4 4"/></svg>
+        <input type="text" id="session-search" placeholder="Search sessions…" spellcheck="false" autocomplete="off">
+      </label>
 
-    <section class="side-block grow">
-      <h2>
-        Workspace
-        <button class="mini-btn" id="btn-tree-refresh" title="Reload the tree" aria-label="Reload the tree">
-          <svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 0 1 13.7-5.7L20 8M20 4v4h-4M20 12a8 8 0 0 1-13.7 5.7L4 16M4 20v-4h4"/></svg>
-        </button>
-      </h2>
-      <div class="tree" id="tree" role="tree"></div>
-    </section>
+      <section class="side-block">
+        <h2>
+          <svg class="h-ico" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+          Pinned
+        </h2>
+        <ul class="sessions" id="pinned-list"></ul>
+        <p class="side-empty" id="pinned-empty">Shift-click a session to pin it</p>
+      </section>
+
+      <section class="side-block">
+        <h2>
+          <svg class="h-ico" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+          Sessions <span class="tally" id="session-count">0</span>
+          <button class="mini-btn" id="btn-tree-refresh" title="Reload the workspace tree" aria-label="Reload the workspace tree">
+            <svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 0 1 13.7-5.7L20 8M20 4v4h-4M20 12a8 8 0 0 1-13.7 5.7L4 16M4 20v-4h4"/></svg>
+          </button>
+        </h2>
+        <ul class="sessions" id="session-list"></ul>
+      </section>
+
+      <section class="side-block">
+        <h2>
+          <svg class="h-ico" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h3.5l2 2H19a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+          Workspace
+        </h2>
+        <div class="tree" id="tree" role="tree"></div>
+      </section>
+    </div>
 
     <div class="side-foot">
-      <span class="mono" id="cwd-label">~</span>
+      <button class="icon-btn sm" title="Workspace root" aria-label="Workspace root">
+        <svg viewBox="0 0 24 24"><path d="M4 11l8-6.5 8 6.5v8a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 19z"/></svg>
+      </button>
+      <button class="icon-btn sm" id="btn-foot-new" title="New session" aria-label="New session">
+        <svg viewBox="0 0 24 24"><path d="M12 5.5v13M5.5 12h13"/></svg>
+      </button>
+      <span class="spacer"></span>
+      <span class="cwd mono" id="cwd-label">~</span>
     </div>
   </nav>
 
   <div class="seam" id="seam-left" role="separator" aria-orientation="vertical" tabindex="0"
        aria-label="Resize the sidebar"></div>
 
-  <!-- ── conversation ──────────────────────────────────────────────────────── -->
+  <!-- ══ conversation ════════════════════════════════════════════════════ -->
   <section class="conversation">
     <div class="transcript" id="transcript" role="log" aria-live="polite" aria-label="Conversation">
       <div class="welcome" id="welcome">
-        <div class="welcome-glow" aria-hidden="true"></div>
-        <h1>Good to see you, <span id="welcome-title">Sir</span>.</h1>
-        <p>Ask anything. Files and tool output open on the right; the agentic terminal
-           runs in its own tab beside them.</p>
+        <h1 class="wordmark">J.A.R.V.I.S.</h1>
+        <p class="wordmark-sub">Ask a question, paste an error, or point me at a repository.
+           I read code, run instruments, and watch the machine while you work.</p>
         <div class="suggestions" id="suggestions"></div>
       </div>
     </div>
@@ -115,114 +150,173 @@
 
     <div class="composer-wrap">
       <form class="composer" id="composer">
-        <div class="composer-glow" aria-hidden="true"></div>
-        <textarea id="input" rows="1" placeholder="Ask J.A.R.V.I.S. anything…  ( / for commands )"
+        <button type="button" class="icon-btn sm attach" id="btn-attach" title="Attach a file from the workspace" aria-label="Attach">
+          <svg viewBox="0 0 24 24"><path d="M12 5.5v13M5.5 12h13"/></svg>
+        </button>
+        <textarea id="input" rows="1" placeholder="What's on your mind?"
                   autocomplete="off" autocapitalize="sentences" spellcheck="true"></textarea>
         <div class="composer-actions">
+          <button type="button" class="model-chip" id="model-chip" title="Model">
+            <span class="chip-name" id="chip-model">—</span>
+            <span class="chip-dot" id="chip-dot"></span>
+            <svg class="chip-caret" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5"/></svg>
+          </button>
+          <button type="button" class="icon-btn sm" id="btn-mic" title="Voice input" aria-label="Voice input">
+            <svg viewBox="0 0 24 24"><rect x="9" y="3.5" width="6" height="10" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3"/></svg>
+          </button>
+          <button type="button" class="icon-btn sm" id="btn-mute" title="Mute spoken replies" aria-label="Mute spoken replies">
+            <svg viewBox="0 0 24 24"><path d="M5 9.5v5h3l4 3.5v-12L8 9.5zM16 10l4 4M20 10l-4 4"/></svg>
+          </button>
           <button type="button" class="icon-btn ghost" id="btn-stop" title="Interrupt  ·  Esc" hidden aria-label="Interrupt">
-            <svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2" class="fill"/></svg>
+            <svg viewBox="0 0 24 24"><rect x="7.5" y="7.5" width="9" height="9" rx="1.5" class="fill"/></svg>
           </button>
           <button type="submit" class="send" id="btn-send" title="Send  ·  Enter" aria-label="Send">
-            <svg viewBox="0 0 24 24"><path d="M5 12h13M12 5l7 7-7 7"/></svg>
+            <svg viewBox="0 0 24 24"><path d="M12 19V6M6 11.5L12 5.5l6 6"/></svg>
           </button>
         </div>
       </form>
-      <div class="hint-row">
-        <span><kbd>Enter</kbd> send</span>
-        <span><kbd>Shift</kbd><kbd>Enter</kbd> newline</span>
-        <span><kbd>Ctrl</kbd><kbd>K</kbd> commands</span>
-        <span><kbd>Ctrl</kbd><kbd>/</kbd> colours</span>
-      </div>
       <div class="slash-menu" id="slash-menu" hidden></div>
     </div>
   </section>
 
   <div class="seam" id="seam-right" role="separator" aria-orientation="vertical" tabindex="0"
-       aria-label="Resize the preview rail"></div>
+       aria-label="Resize the right panel"></div>
 
-  <!-- ── preview rail ──────────────────────────────────────────────────────── -->
-  <aside class="rail" id="rail" aria-label="Preview">
-    <div class="rail-tabs" role="tablist">
-      <button class="rail-tab on" data-view="code" role="tab" aria-selected="true">
-        <svg viewBox="0 0 24 24"><path d="M9 8l-4 4 4 4M15 8l4 4-4 4"/></svg> Code
-      </button>
-      <button class="rail-tab" data-view="terminal" role="tab" aria-selected="false">
-        <svg viewBox="0 0 24 24"><path d="M5 8l4 4-4 4M12 16h7"/></svg> Terminal
-      </button>
-      <button class="rail-tab" data-view="system" role="tab" aria-selected="false">
-        <svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 9h8M8 13h5"/></svg> System
-      </button>
-    </div>
-
-    <!-- Code -->
-    <div class="rail-view on" id="view-code" role="tabpanel">
-      <div class="tabstrip" id="tabstrip"></div>
-      <div class="crumbs" id="crumbs"></div>
-      <div class="code-host" id="code-host">
-        <div class="code-empty" id="code-empty">
-          <svg viewBox="0 0 24 24"><path d="M9 8l-4 4 4 4M15 8l4 4-4 4"/></svg>
-          <p>Pick a file from the workspace tree, or ask J.A.R.V.I.S. to open one.</p>
-        </div>
-        <div class="code-scroll" id="code-scroll" hidden>
-          <table class="code-table"><tbody id="code-body"></tbody></table>
-        </div>
-      </div>
-      <div class="code-foot" id="code-foot" hidden>
-        <span id="code-meta" class="mono"></span>
-        <span class="spacer"></span>
-        <button class="mini-btn wide" id="btn-code-wrap" title="Soft-wrap long lines">Wrap</button>
-        <button class="mini-btn wide" id="btn-code-copy">Copy</button>
-        <button class="mini-btn wide" id="btn-code-ask">Ask about this</button>
+  <!-- ══ right panel ═════════════════════════════════════════════════════ -->
+  <aside class="rail" id="rail" aria-label="Panels">
+    <div class="rail-head">
+      <div class="rail-tabs" role="tablist">
+        <button class="rail-tab" data-view="code" role="tab" aria-selected="false">Code</button>
+        <button class="rail-tab on" data-view="terminal" role="tab" aria-selected="true">Terminal</button>
+        <button class="rail-tab" data-view="agent" role="tab" aria-selected="false">Agent</button>
+        <button class="rail-tab" data-view="logs" role="tab" aria-selected="false">Logs</button>
+        <button class="rail-tab" data-view="system" role="tab" aria-selected="false">System</button>
       </div>
     </div>
 
-    <!-- Terminal: the agentic HUD, live, inside the app -->
-    <div class="rail-view" id="view-terminal" role="tabpanel">
-      <div class="term-head">
-        <span class="mono" id="term-title">jarvis · agentic session</span>
-        <span class="spacer"></span>
-        <button class="mini-btn wide" id="btn-term-clear">Clear</button>
-      </div>
-      <div class="term" id="term" role="log" aria-label="Agentic terminal"></div>
-    </div>
-
-    <!-- System -->
-    <div class="rail-view" id="view-system" role="tabpanel">
-      <div class="rail-scroll">
-        <section class="rail-card">
-          <h3>Machine</h3>
-          <div class="gauges" id="gauges">
-            <div class="gauge" data-key="cpu"><label>CPU</label><div class="bar"><i></i></div><b>—</b></div>
-            <div class="gauge" data-key="ram"><label>Memory</label><div class="bar"><i></i></div><b>—</b></div>
-            <div class="gauge" data-key="disk"><label>Disk</label><div class="bar"><i></i></div><b>—</b></div>
-            <div class="gauge" data-key="battery"><label>Battery</label><div class="bar"><i></i></div><b>—</b></div>
+    <div class="rail-body">
+      <!-- Code -->
+      <div class="rail-view" id="view-code" role="tabpanel">
+        <div class="tabstrip" id="tabstrip"></div>
+        <div class="crumbs" id="crumbs"></div>
+        <div class="code-host" id="code-host">
+          <div class="pane-empty" id="code-empty">
+            <p>No file open.</p>
+            <p class="dim">Pick one from the workspace tree, or ask J.A.R.V.I.S. to open it.</p>
           </div>
-          <div class="cores" id="cores" aria-hidden="true"></div>
-          <p class="rail-note" id="machine-note">Waiting for the ambient monitor…</p>
-        </section>
+          <div class="code-scroll" id="code-scroll" hidden>
+            <table class="code-table"><tbody id="code-body"></tbody></table>
+          </div>
+        </div>
+        <div class="pane-foot" id="code-foot" hidden>
+          <span id="code-meta" class="mono"></span>
+          <span class="spacer"></span>
+          <button class="mini-btn wide" id="btn-code-wrap" title="Soft-wrap long lines">Wrap</button>
+          <button class="mini-btn wide" id="btn-code-copy">Copy</button>
+          <button class="mini-btn wide" id="btn-code-ask">Ask</button>
+        </div>
+      </div>
 
-        <section class="rail-card">
-          <h3>Model</h3>
-          <p class="mono" id="model-name">—</p>
-          <p class="rail-note mono" id="model-host">—</p>
-          <p class="rail-note" id="metrics-line">No turn measured yet.</p>
-        </section>
+      <!-- Terminal: the real system shell — PowerShell on Windows, the login
+           shell elsewhere — running as a long-lived process so cd sticks. -->
+      <div class="rail-view on" id="view-terminal" role="tabpanel">
+        <div class="shellpane" id="shell-pane">
+          <!-- The prompt lives inside the scroller, directly under the last line
+               of output, which is where a terminal puts it. -->
+          <div class="shell-scroll" id="shell-scroll">
+            <div id="shell-out" role="log" aria-label="Shell output"></div>
+            <div class="shell-input-row" id="shell-row">
+              <span class="shell-prompt" id="shell-prompt">$</span>
+              <input type="text" id="shell-input" spellcheck="false" autocomplete="off"
+                     autocapitalize="off" autocorrect="off" aria-label="Shell input">
+            </div>
+          </div>
+        </div>
+        <div class="pane-foot">
+          <span class="mono dim" id="shell-status">not started</span>
+          <span class="spacer"></span>
+          <button class="mini-btn wide" id="btn-shell-stop" title="Interrupt  ·  Ctrl+C">Interrupt</button>
+          <button class="mini-btn wide" id="btn-shell-restart">Restart</button>
+          <button class="mini-btn wide" id="btn-shell-clear">Clear</button>
+        </div>
+      </div>
 
-        <section class="rail-card">
-          <h3>Instruments <span class="count" id="tool-count">0</span></h3>
-          <ul class="chips" id="tool-list"></ul>
-        </section>
+      <!-- Agent: the agentic HUD, live, in the app -->
+      <div class="rail-view" id="view-agent" role="tabpanel">
+        <div class="term" id="term" role="log" aria-label="Agentic terminal"></div>
+        <div class="pane-foot">
+          <span class="mono dim" id="term-title">jarvis · idle</span>
+          <span class="spacer"></span>
+          <button class="mini-btn wide" id="btn-term-clear">Clear</button>
+        </div>
+      </div>
 
-        <section class="rail-card">
-          <h3>Protocols</h3>
-          <ul class="chips" id="protocol-list"></ul>
-        </section>
+      <!-- Logs -->
+      <div class="rail-view" id="view-logs" role="tabpanel">
+        <div class="log-filters" id="log-filters"></div>
+        <div class="logs" id="logs" role="log" aria-label="Log"></div>
+        <div class="pane-foot">
+          <span class="mono dim" id="log-count">0 lines</span>
+          <span class="spacer"></span>
+          <button class="mini-btn wide" id="btn-log-clear">Clear</button>
+        </div>
+      </div>
+
+      <!-- System -->
+      <div class="rail-view" id="view-system" role="tabpanel">
+        <div class="rail-scroll">
+          <section class="rail-card">
+            <h3>Machine</h3>
+            <div class="gauges" id="gauges">
+              <div class="gauge" data-key="cpu"><label>CPU</label><div class="bar"><i></i></div><b>—</b></div>
+              <div class="gauge" data-key="ram"><label>Memory</label><div class="bar"><i></i></div><b>—</b></div>
+              <div class="gauge" data-key="disk"><label>Disk</label><div class="bar"><i></i></div><b>—</b></div>
+              <div class="gauge" data-key="battery"><label>Battery</label><div class="bar"><i></i></div><b>—</b></div>
+            </div>
+            <div class="cores" id="cores" aria-hidden="true"></div>
+            <dl class="facts" id="machine-facts"></dl>
+          </section>
+
+          <section class="rail-card">
+            <h3>Model</h3>
+            <dl class="facts" id="model-facts"></dl>
+          </section>
+
+          <section class="rail-card">
+            <h3>Instruments <span class="tally" id="tool-count">0</span></h3>
+            <ul class="chips" id="tool-list"></ul>
+          </section>
+
+          <section class="rail-card">
+            <h3>Protocols</h3>
+            <ul class="chips" id="protocol-list"></ul>
+          </section>
+        </div>
       </div>
     </div>
   </aside>
+
+  <!-- The narrow strip of view icons down the outer edge. -->
+  <div class="edge" id="edge" aria-label="Panels">
+    <button class="edge-btn" data-view="code" title="Code" aria-label="Code">
+      <svg viewBox="0 0 24 24"><path d="M9 8l-4 4 4 4M15 8l4 4-4 4"/></svg>
+    </button>
+    <button class="edge-btn on" data-view="terminal" title="Terminal" aria-label="Terminal">
+      <svg viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="2"/><path d="M7 9.5l3 2.5-3 2.5M12.5 15h4"/></svg>
+    </button>
+    <button class="edge-btn" data-view="agent" title="Agent" aria-label="Agent">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="8"/></svg>
+    </button>
+    <button class="edge-btn" data-view="logs" title="Logs" aria-label="Logs">
+      <svg viewBox="0 0 24 24"><path d="M5 5.5h14M5 10h14M5 14.5h10M5 19h7"/></svg>
+    </button>
+    <button class="edge-btn" data-view="system" title="System" aria-label="System">
+      <svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 9.5h8M8 13h5"/></svg>
+    </button>
+  </div>
 </main>
 
-<!-- ── status bar ─────────────────────────────────────────────────────────── -->
+<!-- ══ status bar ═══════════════════════════════════════════════════════ -->
 <footer class="statusbar">
   <span class="sb-item" id="sb-state"><i class="sb-dot"></i> Ready</span>
   <span class="sb-sep"></span>
@@ -233,52 +327,61 @@
   <span class="sb-item mono" id="sb-file"></span>
   <span class="sb-item mono" id="sb-metrics"></span>
   <span class="sb-item mono" id="sb-cpu"></span>
-  <span class="sb-item" id="sb-link" title="Connection">live</span>
+  <span class="sb-item mono" id="sb-link" title="Event stream">live</span>
 </footer>
 
-<!-- ── theme studio ───────────────────────────────────────────────────────── -->
+<!-- ══ appearance panel ═════════════════════════════════════════════════ -->
 <div class="scrim" id="scrim" hidden></div>
-<aside class="studio" id="studio" hidden aria-label="Theme studio">
+<aside class="studio" id="studio" hidden aria-label="Appearance">
   <header class="studio-head">
     <div>
-      <h2>Colour</h2>
-      <p id="theme-name">Arc Reactor</p>
+      <h2>Appearance</h2>
+      <p id="theme-name">Graphite</p>
     </div>
-    <button class="icon-btn" id="btn-studio-close" aria-label="Close the theme studio">
+    <button class="icon-btn sm" id="btn-studio-close" aria-label="Close">
       <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
     </button>
   </header>
 
   <div class="studio-body">
     <section class="studio-section">
+      <h3>Presets</h3>
+      <div class="swatches" id="swatches"></div>
+    </section>
+
+    <section class="studio-section">
+      <h3>Ground</h3>
+      <div class="segmented" id="mode-group" role="radiogroup" aria-label="Background"></div>
+    </section>
+
+    <section class="studio-section">
+      <h3>Accent</h3>
       <div class="wheel-wrap">
         <canvas id="wheel" width="440" height="440" aria-label="Colour wheel"></canvas>
         <span class="wheel-thumb" id="wheel-thumb"></span>
       </div>
       <label class="slider-row">
-        <span>Brightness</span>
+        <span>Brightness<b id="v-light"></b></span>
         <input type="range" id="s-light" min="8" max="92" step="1" value="55">
       </label>
       <div class="hex-row">
         <label class="hex-field">
-          <input type="text" id="hex" value="#22d3ee" spellcheck="false" aria-label="Accent colour, as hex">
-          <input type="color" id="picker" value="#22d3ee" aria-label="System colour picker">
+          <input type="text" id="hex" value="#8b9099" spellcheck="false" aria-label="Accent colour, as hex">
+          <input type="color" id="picker" value="#8b9099" aria-label="System colour picker">
         </label>
-        <button class="btn subtle" id="btn-surprise" title="A random theme that still looks good">Surprise me</button>
+        <button class="btn subtle" id="btn-surprise">Surprise</button>
       </div>
     </section>
 
     <section class="studio-section">
-      <h3>Ground</h3>
-      <div class="segmented" id="mode-group" role="radiogroup" aria-label="Background mode"></div>
-    </section>
-
-    <section class="studio-section">
       <h3>Feel</h3>
-      <label class="slider-row"><span>Colour in the background</span><input type="range" id="s-tint" min="0" max="100" value="55"></label>
-      <label class="slider-row"><span>Panel separation</span><input type="range" id="s-contrast" min="0" max="100" value="50"></label>
-      <label class="slider-row"><span>Glow</span><input type="range" id="s-glow" min="0" max="100" value="60"></label>
-      <label class="slider-row"><span>Corner rounding</span><input type="range" id="s-radius" min="0" max="28" value="14"></label>
+      <label class="slider-row"><span>Colour in the background<b id="v-tint"></b></span><input type="range" id="s-tint" min="0" max="100" value="10"></label>
+      <label class="slider-row"><span>Panel separation<b id="v-contrast"></b></span><input type="range" id="s-contrast" min="0" max="100" value="55"></label>
+      <label class="slider-row"><span>Glow<b id="v-glow"></b></span><input type="range" id="s-glow" min="0" max="100" value="10"></label>
+      <label class="slider-row"><span>Corner rounding<b id="v-radius"></b></span><input type="range" id="s-radius" min="0" max="28" value="8"></label>
+      <p class="studio-note">The shipped default is deliberately quiet — grey, with the
+         accent reaching only the caret, the selected row and the status dot. Turn
+         <em>colour in the background</em> up and it floods the whole room.</p>
     </section>
 
     <section class="studio-section">
@@ -287,28 +390,35 @@
     </section>
 
     <section class="studio-section">
-      <h3>Presets</h3>
-      <div class="swatches" id="swatches"></div>
-    </section>
-
-    <section class="studio-section">
-      <h3>Secondary accent</h3>
-      <p class="studio-note">Used for tool cards, protocol chips and the second bloom. Derived from your accent unless you set it.</p>
+      <h3>Secondary</h3>
+      <p class="studio-note">Instrument cards and the second wash. Derived 42° off your accent unless you set it.</p>
       <label class="hex-field wide">
         <input type="text" id="hex2" spellcheck="false" aria-label="Secondary colour, as hex">
         <input type="color" id="picker2" aria-label="System colour picker for the secondary colour">
       </label>
     </section>
 
-    <p class="studio-note" id="persist-note">Saved automatically — these colours come back next time.</p>
+    <p class="studio-note" id="persist-note">Saved to <code>.jarvis_theme.json</code> — these come back next time, in the terminal too.</p>
   </div>
 </aside>
 
-<!-- ── command palette ────────────────────────────────────────────────────── -->
+<!-- ══ command palette ══════════════════════════════════════════════════ -->
 <div class="palette-wrap" id="palette-wrap" hidden>
   <div class="palette" role="dialog" aria-label="Command palette">
-    <input type="text" id="palette-input" placeholder="Type a command, or a file name…" spellcheck="false" autocomplete="off">
+    <div class="palette-field">
+      <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4 4"/></svg>
+      <input type="text" id="palette-input" placeholder="Run a command, open a file…" spellcheck="false" autocomplete="off">
+      <kbd class="hint">Esc</kbd>
+    </div>
     <ul id="palette-list"></ul>
+  </div>
+</div>
+
+<!-- ══ keyboard reference ═══════════════════════════════════════════════ -->
+<div class="palette-wrap" id="keys-wrap" hidden>
+  <div class="palette keys" role="dialog" aria-label="Keyboard shortcuts">
+    <div class="palette-field static"><span>Keyboard</span><span class="spacer"></span><kbd class="hint">Esc</kbd></div>
+    <dl class="keymap" id="keymap"></dl>
   </div>
 </div>
 

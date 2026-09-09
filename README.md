@@ -20,9 +20,12 @@ languages including Hindi, Bengali, Telugu, Marathi and Tamil.
 
 | | |
 |---|---|
-| **Desktop app** | `jarvis-desktop` opens a real three-pane window: sessions and a workspace tree on the left, the conversation in the middle, and a preview rail on the right that holds a code viewer, the live agentic terminal and the instruments. Runs on the standard library alone — no Electron, no bundle, no extra install. |
+| **Desktop app** | `jarvis-desktop` opens a real three-pane window: navigation and a workspace tree on the left, the conversation in the middle, and a panel rail on the right holding a code viewer, a working shell, the agentic HUD, the log and the instruments. Runs on the standard library alone — no Electron, no bundle, no extra install. |
 | **Code section** | A file browser and a syntax-highlighted viewer, sandboxed to the workspace. Open-file tabs, a line-number gutter, breadcrumbs, soft wrap, copy, and *Ask about this* to drop the path straight into the composer. |
-| **The terminal, in the app** | The agentic HUD's own grammar — `⏺` for what J.A.R.V.I.S. did, `⎿` for what came back — streaming live in its own tab. The terminal front end is not replaced by the window; it is reproduced in it, and still runs on its own. |
+| **Logs** | The session as it happens — timestamp, level, message — filterable by level, fed by the same event stream as everything else. |
+| **A real terminal** | PowerShell on Windows, your login shell elsewhere, running as one long-lived process beside the conversation. `cd` sticks, variables persist, history on the arrow keys, exit codes in red. |
+| **The agentic HUD, in the app** | Its own grammar — `⏺` for what J.A.R.V.I.S. did, `⎿` for what came back — streaming live in its own tab. The terminal front end is not replaced by the window; it is reproduced in it, and still runs on its own. |
+| **Quiet by default** | Grey on near-black. The accent reaches the caret, the selected row and a status dot, and nothing else. An instrument you keep open all day should not be shouting a hue at you — the colour is there, but you have to ask for it. |
 | **Any colour you like** | Not four palettes: *any* colour. Drag a wheel or type `#ff8c42`, and the entire interface — backgrounds, surfaces, borders, gauges, the reactor — is re-derived from that one seed, stays readable by WCAG AA, and is remembered. `/theme violet` works in the terminal too. |
 | **Full-screen HUD** | The whole terminal, in Claude Code's grammar: a scrollable transcript, replies that arrive word by word, instrument cards that spin while they run and resolve in place, and a working line that says what it is doing and how to stop it. It opens on a greeting that has read the machine first. `--classic` restores the old pinned strip. |
 | **Live keywords** | `talk` and `quiet` act the moment you send them, and are coloured as you type them so you can see it before you press enter. |
@@ -542,34 +545,36 @@ Hermes got it right: chat first, with a preview rail on the right so reading a f
 costs you your place in the conversation.
 
 ```
-┌──────────────────────────────────────────────────────────────────────────┐
-│ ●●●  ⬤ session name                        [READY]   ◍  ☰  ▤             │
-├───────────────┬────────────────────────────────┬─────────────────────────┤
-│ + New session │                                │  Code │ Terminal │ Sys  │
-│               │   you ────────────────────     │ ┌─────────────────────┐ │
-│ SESSIONS      │                                │ │ theme.py × app.css  │ │
-│  • current    │   ⏺ read_file                  │ ├─────────────────────┤ │
-│               │     713 lines, 31.8 KB         │ │ J.A.R.V.I.S / jarvis│ │
-│ WORKSPACE   ⟳ │                                │ ├─────────────────────┤ │
-│  ▾ jarvis     │   J  streaming reply…          │ │  1  """Colour engine │ │
-│    ▸ web      │      ┌───────────────────┐     │ │  2                  │ │
-│      theme.py │      │ python      Copy  │     │ │  3  One seed colour │ │
-│      tui.py   │      │ def background(): │     │ │  4                  │ │
-│  ▸ tests      │      └───────────────────┘     │ └─────────────────────┘ │
-│               │  ┌──────────────────────────┐  │ python · 713 lines      │
-│ ~/J.A.R.V.I.S │  │ Ask anything…         →  │  │ Wrap  Copy  Ask about   │
-├───────────────┴──────────────────────────────┴──────────────────────────┤
-│ ● Ready │ llama3.1:8b │ ~/J.A.R.V.I.S.   theme.py · 713 lines  cpu 34% ● │
-└──────────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────┐
+│ ▤ ⇄  session name                              ▤ ◍ ⌨ ☀ ☰  │  ─  □  ✕       │
+├──────────────┬───────────────────────────────┬──────────────────────────┬──┤
+│ New session  │                               │ CODE TERMINAL AGENT LOGS │<>│
+│ Capabilities │                               ├──────────────────────────┤>_│
+│ Messaging    │         J.A.R.V.I.S.          │ ~/J.A.R.V.I.S $ pwd      │◎ │
+│ Artifacts    │                               │ /home/you/J.A.R.V.I.S    │≡ │
+│ ⌕ Search…    │   Ask a question, paste an    │ ~/J.A.R.V.I.S $ cd jarvis│▤ │
+│              │   error, or point me at a     │ ~/…/jarvis $ ls          │  │
+│ PINNED       │   repository.                 │ core.py  theme.py  …     │  │
+│ SESSIONS  3  │                               │ ~/…/jarvis $ ▊           │  │
+│  TODAY       │                               │                          │  │
+│  • current   │                               │                          │  │
+│ WORKSPACE    │  ┌─────────────────────────┐  │                          │  │
+│  ▾ jarvis    │  │ + What's on your mind?  │  │                          │  │
+│    theme.py  │  │       gemma4 ● ⌄  🎤  → │  │ bash · ready  Interrupt  │  │
+├──────────────┴──┴─────────────────────────┴──┴──────────────────────────┴──┤
+│ ● Ready │ gemma4:31b-cloud │ ~/J.A.R.V.I.S   theme.py · 713 lines  cpu 34% │
+└────────────────────────────────────────────────────────────────────────────┘
 ```
 
 | | |
 |---|---|
-| **Sidebar** | Sessions, and a lazily-loaded workspace tree with file sizes. Click a file to open it in the code view. |
+| **Sidebar** | Navigation, session search, pinned sessions, sessions grouped by day, and a lazily-loaded workspace tree with file sizes. Click a file to open it in the code view. |
 | **Transcript** | Replies stream in word by word behind a caret, then settle into rendered Markdown — headings, lists, tables, quotes, and code blocks with a Copy button. |
 | **Instrument cards** | Every tool call appears as a card that spins while it runs and resolves in place with its reading. |
 | **Code** | Open-file tabs, breadcrumbs, a sticky line-number gutter that does not select with the code, syntax colouring drawn from your own theme, soft wrap, and *Ask about this*. |
-| **Terminal** | The agentic HUD, live, in the app. Same events as the transcript, rendered in the terminal's grammar. |
+| **Terminal** | A real shell — PowerShell, bash, zsh. The next section. |
+| **Agent** | The agentic HUD, live, in the app. Same events as the transcript, rendered in the terminal's grammar. |
+| **Logs** | Timestamp, level, message — the three columns you actually scan a log by — filterable, and carrying the instrument calls as well as the system lines. |
 | **System** | Live CPU, memory, disk and battery, a per-core strip, the model, the instruments and the protocols. |
 | **Permission cards** | The consent layer, as a card with *Allow once* / *Always allow* / *Deny*. Nothing reaches outside the workspace without one. |
 | **Status bar** | State, model, workspace root, open file, last turn's latency, live CPU, and whether the event stream is connected. |
@@ -577,9 +582,43 @@ costs you your place in the conversation.
 | **Colour studio** | `Ctrl`+`/`. The next section. |
 
 Keys: `Enter` sends, `Shift`+`Enter` newlines, `/` opens command completion, `Ctrl`+`K`
-the palette, `Ctrl`+`/` the colours, `Ctrl`+`B` the rail, `Ctrl`+`\` the sidebar,
-`Ctrl`+`1/2/3` the rail views, `Esc` interrupts. Start typing anywhere and the composer
-takes it. Both seams drag, and remember their width.
+the palette, `Ctrl`+`/` appearance, `Ctrl`+`B` the rail, `Ctrl`+`\` the sidebar,
+`Ctrl`+`1`–`5` the rail views, `Ctrl`+`N` a new session, `?` the full sheet, `Esc`
+interrupts. Start typing anywhere and the composer takes it. Both seams drag, and
+remember their width.
+
+### The terminal
+
+A real one. PowerShell on Windows — PowerShell 7 if you have it, Windows PowerShell if
+not — and your login shell everywhere else. It runs as a **single long-lived process**,
+which is the whole point: `cd` sticks, an activated virtualenv stays activated, and a
+variable you set on one line is still set on the next.
+
+```
+PS C:\Users\Shiva> cd .\projects\reactor
+PS ~\projects\reactor> python -c "print(2**32)"
+4294967296
+PS ~\projects\reactor> nosuchcommand
+nosuchcommand : The term 'nosuchcommand' is not recognized…
+exit 1
+```
+
+Command history on ↑/↓, `Ctrl`+`C` to interrupt, `Ctrl`+`L` to clear, and a prompt that
+tracks the working directory and shortens it the way a shell prompt does.
+
+There is no pseudo-terminal behind it — the standard library has no portable one, and
+pulling in a PTY layer for a single pane is not a trade worth making — so it is
+line-oriented. Ordinary commands work; a full-screen program like `vim` or `top` has
+nothing to draw into. Since the shell therefore never prints a prompt of its own, each
+command is followed by a sentinel carrying the exit status and the working directory,
+and that marker carries a per-session random suffix so output cannot forge one.
+
+It is exactly as dangerous as a terminal, which is what makes it useful. It sits behind
+the same loopback-only, token-checked, `Host`-verified boundary as everything else the
+window can reach — the same boundary the `run_command` instrument already sits behind, so
+this adds a pane rather than a privilege. Every line is written to the log file before it
+runs. Set `DESKTOP_SHELL_ENABLED=false` in your `.env` to remove the pane entirely and
+have the route refuse outright.
 
 ### The code section
 
@@ -635,8 +674,12 @@ remote code execution hole for any page in the browser.
 
 ## Colour
 
-Four fixed palettes were never the point. Pick **any** colour and the whole interface is
-derived from it.
+The shipped default is **grey on near-black**, and deliberately so. The accent reaches
+the caret, the selected row, a focus ring and a status dot — and nothing else. An
+instrument you keep open all day should not be shouting a hue at you, and an interface
+where every surface is tinted and every panel glows reads as a demo rather than a tool.
+
+The colour is still there. It is one slider away, and it goes all the way.
 
 ```bash
 /theme #ff8c42          # a hex code
@@ -656,7 +699,7 @@ colour is not a desktop-app setting; it is how you want J.A.R.V.I.S. to look.
 |---|---|
 | **Wheel + brightness** | Hue around, saturation outward, lightness on the slider beneath. |
 | **Ground** | `Dark`, `Midnight` (true black, for OLED) or `Light`. |
-| **Colour in the background** | How much of your hue bleeds into the surfaces. 0 is neutral grey; 1 is unmistakably yours. |
+| **Colour in the background** | How much of your hue bleeds into the surfaces. Ships at **0.10** — near-neutral. Turn it up and it floods the whole room. |
 | **Panel separation** | How far the cards stand off the ground. |
 | **Glow** | The accent bloom behind live elements and the ambient light in the room. |
 | **Corner rounding** | 0 (severe) to 28 (soft). |
@@ -854,8 +897,8 @@ pip install pytest pytest-asyncio
 pytest -q
 ```
 
-Two hundred and thirteen tests, no Ollama daemon, no microphone, no browser,
-well under two minutes. The model is a scripted fake and the HUD is driven
+Two hundred and forty-seven tests, no Ollama daemon, no microphone, no
+browser, well under two minutes. The model is a scripted fake and the HUD is driven
 through Textual's pilot, so the suite covers streaming, tool parallelism,
 cancellation, the transcript, the modal dialogs and the whole boot sequence.
 
@@ -917,6 +960,7 @@ jarvis/
   ui.py              The classic HUD: pinned status strip above a scrolling shell
   tui.py             The full-screen HUD: transcript, instruments, modals
   desktop.py         The desktop HUD: local server, event stream, window
+  shell.py           The Terminal pane's shell: PowerShell, bash, zsh
   theme.py           The colour engine: one seed in, a whole interface out
   web/               The desktop front end: one page, one stylesheet, one script
   prompts.py         System prompt and personality

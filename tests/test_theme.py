@@ -223,7 +223,7 @@ def test_every_preset_is_readable_too():
 def test_presets_are_reachable_by_key_label_and_old_palette_name():
     assert theme_mod.preset("house_party") is theme_mod.PRESETS["house_party"]
     assert theme_mod.preset("House Party") is theme_mod.PRESETS["house_party"]
-    assert theme_mod.preset("standard") is theme_mod.PRESETS["arc_reactor"]
+    assert theme_mod.preset("standard") is theme_mod.PRESETS["graphite"]
     assert theme_mod.preset("no such thing") is None
 
 
@@ -283,10 +283,10 @@ def test_a_theme_survives_a_round_trip_through_disk(tmp_path):
 
 
 def test_loading_a_missing_or_broken_file_gives_the_default(tmp_path):
-    assert theme_mod.load(tmp_path / "absent.json").name == "Arc Reactor"
+    assert theme_mod.load(tmp_path / "absent.json").name == "Graphite"
     broken = tmp_path / "broken.json"
     broken.write_text("{not json at all", encoding="utf-8")
-    assert theme_mod.load(broken).name == "Arc Reactor"
+    assert theme_mod.load(broken).name == "Graphite"
 
 
 def test_a_theme_file_from_a_newer_version_still_loads(tmp_path):
@@ -307,6 +307,26 @@ def test_saving_somewhere_unwritable_reports_failure_rather_than_raising(tmp_pat
     blocker = tmp_path / "file"
     blocker.write_text("not a directory", encoding="utf-8")
     assert theme_mod.save(Theme(), blocker / "nested" / "theme.json") is False
+
+
+def test_the_shipped_default_is_quiet():
+    """Grey, near-monochrome, and no visible bloom. Restraint by default."""
+    default = theme_mod.PRESETS["graphite"]
+    hue, sat, _ = theme_mod.to_hsl(default.seed)
+    assert sat < 0.15, "the shipped accent should be grey, not a hue"
+    assert default.tint <= 0.15 and default.glow <= 0.15
+    assert float(default.css_variables()["--bloom-opacity"]) < 0.1
+    # And the ground should be near-black rather than tinted.
+    ground_sat = theme_mod.to_hsl(default.css_variables()["--bg"])[1]
+    assert ground_sat < 0.05
+
+
+def test_surprise_stays_within_the_house_style():
+    """"Surprise me" hands back something you would keep, not a lava lamp."""
+    rng = random.Random(3)
+    for _ in range(40):
+        chosen = theme_mod.surprise(rng)
+        assert chosen.tint <= 0.32 and chosen.glow <= 0.28
 
 
 def test_evolve_leaves_the_original_alone():
