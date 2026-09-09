@@ -516,6 +516,10 @@ const Transcript = {
 
   init() {
     this.node = $('transcript');
+    // Kept aside so /clear can put it back. Removing it on the first message
+    // and never restoring it left an empty grey pane after every reset.
+    const welcome = $('welcome');
+    this.welcome = welcome ? welcome.cloneNode(true) : null;
     this.node.addEventListener('scroll', () => {
       const gap = this.node.scrollHeight - this.node.scrollTop - this.node.clientHeight;
       state.atBottom = gap < 90;
@@ -535,12 +539,14 @@ const Transcript = {
   /* Only follow the stream when the operator is already at the bottom. Yanking
      someone back down while they are reading is the single rudest thing a chat
      interface can do. */
+  /* `force` is the Jump button: a deliberate move, worth a glide. Everything
+     else is a stream following itself, which must be instant. */
   toBottom(force) {
     if (!force && !state.atBottom) return;
     requestAnimationFrame(() => {
       this.node.scrollTo({
         top: this.node.scrollHeight,
-        behavior: (REDUCED || force) ? 'auto' : 'smooth',
+        behavior: (force && !REDUCED) ? 'smooth' : 'instant',
       });
     });
   },
@@ -617,6 +623,15 @@ const Transcript = {
     this.node.innerHTML = '';
     state.streaming = null;
     state.streamBuffer = '';
+    state.lastTool = null;
+    if (this.welcome) {
+      const fresh = this.welcome.cloneNode(true);
+      this.node.appendChild(fresh);
+      // The suggestions are buttons; the clone lost their handlers.
+      fresh.querySelectorAll('.suggestion').forEach((button) => {
+        button.onclick = () => Composer.send(button.textContent);
+      });
+    }
   },
 };
 
@@ -1003,11 +1018,17 @@ const Palette = {
     })).concat([
       { label: 'Colours', what: 'Open the theme studio', run: () => Studio.show() },
       { label: 'Surprise me', what: 'A random theme that still looks good', run: () => Studio.push({ surprise: true }) },
-      { label: 'Code', what: 'Show the code view', run: () => Rail.show('code') },
-      { label: 'Terminal', what: 'Show the agentic terminal', run: () => Rail.show('terminal') },
-      { label: 'System', what: 'Show instruments and machine gauges', run: () => Rail.show('system') },
-      { label: 'Preview rail', what: 'Show or hide the right-hand rail', run: () => Shell.toggle('rail') },
-      { label: 'Sidebar', what: 'Show or hide the left sidebar', run: () => Shell.toggle('sidebar') },
+      { label: 'Code', what: 'Files and the code viewer', run: () => Rail.show('code') },
+      { label: 'Terminal', what: 'The system shell', run: () => Rail.show('terminal') },
+      { label: 'Agent', what: 'The agentic HUD, live', run: () => Rail.show('agent') },
+      { label: 'Logs', what: 'This session as it happens', run: () => Rail.show('logs') },
+      { label: 'System', what: 'Instruments and machine gauges', run: () => Rail.show('system') },
+      { label: 'Right panel', what: 'Show or hide it', run: () => Shell.toggle('rail') },
+      { label: 'Sidebar', what: 'Show or hide it', run: () => Shell.toggle('sidebar') },
+      { label: 'Restart the shell', what: 'Start a fresh shell process', run: () => {
+        Rail.show('terminal');
+        api('/api/shell', { restart: true }).catch(() => {});
+      } },
     ], (BOOT.protocols || []).map((name) => ({
       label: name, what: 'Run this protocol', run: () => Composer.send('/protocol ' + name),
     })));
@@ -1089,10 +1110,22 @@ const Shell = {
     requestAnimationFrame(() => this.node.classList.add('animate'));
   },
 
+  /* A width. Zero is never a legitimate stored width, so it falls back. */
   read(key, fallback) {
     try {
       const saved = Number(localStorage.getItem('jarvis.' + key));
       return Number.isFinite(saved) && saved > 0 ? saved : fallback;
+    } catch (err) { return fallback; }
+  },
+
+  /* A flag. Zero *is* legitimate — it means the operator closed that pane —
+     so this must distinguish a stored 0 from an absent key, which `read`
+     above cannot. Without it, closing a pane never survived a reload. */
+  readFlag(key, fallback) {
+    try {
+      const raw = localStorage.getItem('jarvis.' + key);
+      if (raw === null || raw === '') return fallback;
+      return raw === '1' || raw === 'true';
     } catch (err) { return fallback; }
   },
 
@@ -1104,9 +1137,9 @@ const Shell = {
     const root = document.documentElement;
     root.style.setProperty('--sidebar-width', this.read('sidebar', 244) + 'px');
     root.style.setProperty('--rail-width', this.read('rail', 400) + 'px');
-    const wide = window.innerWidth;
-    this.set('sidebar', this.read('sidebar-open', wide > 1180 ? 1 : 0) === 1);
-    this.set('rail', this.read('rail-open', wide > 1180 ? 1 : 0) === 1);
+    const wide = window.innerWidth > 1180;
+    this.set('sidebar', this.readFlag('sidebar-open', wide));
+    this.set('rail', this.readFlag('rail-open', wide));
   },
 
   set(which, open) {
@@ -1193,7 +1226,11 @@ const Rail = {
         this.show(button.dataset.view);
       };
     });
-    this.show(this.remembered());
+    // Selects the remembered tab without forcing the rail open: restoring which
+    // view was last shown must not override whether the pane was closed. It did,
+    // which meant a narrow window landed on a full-screen Terminal with the
+    // conversation behind it and no obvious way back.
+    this.show(this.remembered(), { silent: true });
   },
 
   remembered() {
@@ -1203,10 +1240,10 @@ const Rail = {
     } catch (err) { return 'terminal'; }
   },
 
-  show(view) {
+  show(view, options) {
     if (VIEWS.indexOf(view) === -1) return;
     this.view = view;
-    Shell.open('rail');
+    if (!(options && options.silent)) Shell.open('rail');
     try { localStorage.setItem('jarvis.view', view); } catch (err) { /* private mode */ }
 
     document.querySelectorAll('.rail-tab').forEach((tab) => {
@@ -1221,6 +1258,7 @@ const Rail = {
       panel.classList.toggle('on', panel.id === 'view-' + view);
     });
     this.unmark(view);
+    if (options && options.silent) return;
     if (view === 'terminal') Sh.focus();
     if (view === 'agent') Term.toBottom(true);
     if (view === 'logs') Logs.toBottom(true);
@@ -1507,7 +1545,7 @@ const Logs = {
       row.append(
         el('span', 'at', line.at),
         el('span', 'lv', line.level),
-        el('span', 'msg', line.message),
+        el('span', 'log-msg', line.message),
       );
       batch.appendChild(row);
     });
@@ -1921,7 +1959,11 @@ const Code = {
       const row = document.createElement('tr');
       const gutter = document.createElement('td');
       gutter.className = 'ln';
-      gutter.textContent = String(i + 1);
+      // The number is drawn by CSS from this attribute rather than being a text
+      // node. `user-select: none` stops a drag from highlighting it, but it does
+      // not keep it out of a selection that spans the row — generated content
+      // does, so copying a block of code can never come back numbered.
+      gutter.dataset.line = String(i + 1);
       const src = document.createElement('td');
       src.className = 'src';
       src.innerHTML = highlight(line, file.language, state) || '&nbsp;';
@@ -1988,7 +2030,7 @@ const Term = {
     this.node.appendChild(row);
     this.trim();
     this.toBottom();
-    Rail.mark('terminal');
+    Rail.mark('agent');      // this pane is Agent; Terminal is the system shell
     return row;
   },
 
