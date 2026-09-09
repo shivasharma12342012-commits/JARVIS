@@ -28,6 +28,12 @@ const el = (tag, cls, text) => {
   return node;
 };
 
+/* The inverse of esc(), for the one place the highlighter has to hand a slice
+   of already-escaped text back through itself. */
+const unesc = (s) => String(s == null ? '' : s)
+  .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+  .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&');
+
 /* Escape before anything else touches model output. */
 const esc = (s) => String(s == null ? '' : s)
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -246,6 +252,7 @@ const Studio = {
     wheel.addEventListener('pointercancel', release);
 
     $('s-light').addEventListener('input', () => {
+      this.readouts();
       const hsl = Colour.toHsl(state.theme.seed) || [0.5, 0.7, 0.55];
       const hex = Colour.fromHsl(hsl[0], hsl[1], Number($('s-light').value) / 100);
       this.preview(hex);
@@ -258,11 +265,15 @@ const Studio = {
       $(id).addEventListener('input', () => {
         const changes = {};
         changes[key] = Number($(id).value) / 100;
+        this.readouts();
         this.push(changes, true);
       });
       $(id).addEventListener('change', () => this.flush());
     });
-    $('s-radius').addEventListener('input', () => this.push({ radius: Number($('s-radius').value) }, true));
+    $('s-radius').addEventListener('input', () => {
+      this.readouts();
+      this.push({ radius: Number($('s-radius').value) }, true);
+    });
     $('s-radius').addEventListener('change', () => this.flush());
 
     const hexField = $('hex'), picker = $('picker');
@@ -330,10 +341,11 @@ const Studio = {
 
     const hsl = Colour.toHsl(theme.seed);
     if (hsl) $('s-light').value = Math.round(hsl[2] * 100);
-    $('s-tint').value = Math.round((theme.tint == null ? 0.55 : theme.tint) * 100);
-    $('s-contrast').value = Math.round((theme.contrast == null ? 0.5 : theme.contrast) * 100);
-    $('s-glow').value = Math.round((theme.glow == null ? 0.6 : theme.glow) * 100);
-    $('s-radius').value = theme.radius == null ? 14 : theme.radius;
+    $('s-tint').value = Math.round((theme.tint == null ? 0.10 : theme.tint) * 100);
+    $('s-contrast').value = Math.round((theme.contrast == null ? 0.55 : theme.contrast) * 100);
+    $('s-glow').value = Math.round((theme.glow == null ? 0.10 : theme.glow) * 100);
+    $('s-radius').value = theme.radius == null ? 8 : theme.radius;
+    this.readouts();
 
     const point = this.pointAt(theme.seed);
     const thumb = $('wheel-thumb');
@@ -348,6 +360,16 @@ const Studio = {
       b.classList.toggle('on', !!preset && preset.seed === theme.seed && preset.mode === theme.mode);
     });
     document.documentElement.dataset.mode = theme.mode || 'dark';
+  },
+
+  /* Every slider says what it is set to. A control whose value you can only
+     infer from the position of a dot is half a control. */
+  readouts() {
+    [['s-light', 'v-light', '%'], ['s-tint', 'v-tint', '%'], ['s-contrast', 'v-contrast', '%'],
+     ['s-glow', 'v-glow', '%'], ['s-radius', 'v-radius', 'px']].forEach((row) => {
+      const out = $(row[1]);
+      if (out) out.textContent = $(row[0]).value + row[2];
+    });
   },
 
   /* -- visibility ---------------------------------------------------------- */
@@ -640,18 +662,36 @@ function streamEnd(finalText, interim) {
    Live connection
    ============================================================================= */
 const HANDLERS = {
-  user: (d) => { Transcript.message('user', d.text, false); Term.user(d.text); },
+  user: (d) => {
+    Transcript.message('user', d.text, false);
+    Term.user(d.text);
+    Sessions.name(d.text);
+  },
   agent: (d) => {
     Transcript.message('agent', d.text, d.markdown !== false);
     Term.line('agent', BULLET, Term.flatten(d.text));
   },
-  system: (d) => { Transcript.note(d.text, d.level); Term.system(d.text, d.level); },
+  system: (d) => {
+    Transcript.note(d.text, d.level);
+    Term.system(d.text, d.level);
+    Logs.add(d.level === 'success' ? 'info' : (d.level || 'info'), d.text);
+  },
   interim: (d) => { if (d.text) Transcript.thought(d.text); },
   thought: (d) => { if (d.text) { Transcript.thought(d.text); Term.thought(d.text); } },
-  tool_start: (d) => { Transcript.toolStart(d.name, d.arguments); Term.toolStart(d.name, d.arguments); },
-  tool_end: (d) => { Transcript.toolEnd(d.name, d.ok, d.summary); Term.toolEnd(d.name, d.ok, d.summary); },
+  tool_start: (d) => {
+    Transcript.toolStart(d.name, d.arguments);
+    Term.toolStart(d.name, d.arguments);
+    Logs.add('tool', d.name + ' ' + (d.arguments ? JSON.stringify(d.arguments) : ''));
+  },
+  tool_end: (d) => {
+    Transcript.toolEnd(d.name, d.ok, d.summary);
+    Term.toolEnd(d.name, d.ok, d.summary);
+    Logs.add(d.ok ? 'tool' : 'error', d.name + ' → ' + (d.summary || (d.ok ? 'done' : 'failed')));
+  },
   alert: (d) => {
-    Transcript.note(d.title + ': ' + d.text, d.severity === 'critical' ? 'error' : 'warn');
+    const level = d.severity === 'critical' ? 'error' : 'warn';
+    Transcript.note(d.title + ': ' + d.text, level);
+    Logs.add(level, d.title + ': ' + d.text);
     toast(d.title);
   },
   code: (d) => Transcript.message('agent', '```' + (d.language || '') + '\n' + d.code + '\n```', true),
@@ -664,17 +704,32 @@ const HANDLERS = {
   telemetry: (d) => Gauges.update(d),
   metrics: (d) => {
     if (!d.summary) return;
-    $('metrics-line').textContent = d.summary;
     $('sb-metrics').textContent = d.summary;
+    Logs.add('info', 'turn: ' + d.summary);
   },
-  model_status: (d) => { $('model-name').textContent = d.text; $('sb-model').textContent = d.text; },
-  voice_status: (d) => { $('machine-note').textContent = d.text; },
-  protocol: (d) => { if (d.name) toast('Protocol: ' + d.name); },
+  model_status: (d) => {
+    $('sb-model').textContent = d.text;
+    $('chip-model').textContent = String(d.text).split('·')[0].trim();
+    const ready = /ready|warm/i.test(d.text);
+    $('chip-dot').className = 'chip-dot ' + (ready ? 'ready' : 'down');
+    facts('model-facts', [
+      ['Model', BOOT.model || '—'],
+      ['Host', BOOT.host || '—'],
+      ['Status', d.text],
+      ['Mode', BOOT.standalone ? 'standalone' : 'attached to a terminal'],
+    ]);
+    Logs.add(ready ? 'info' : 'warn', d.text);
+  },
+  voice_status: (d) => Logs.add('info', d.text),
+  protocol: (d) => { if (d.name) { toast('Protocol: ' + d.name); Logs.add('info', 'protocol: ' + d.name); } },
   warm: () => {},
   amplitude: () => {},
   theme: (d) => { applyVariables(d.variables); Studio.sync(d.theme); },
   ask: (d) => Ask.card(d),
   ask_done: (d) => Ask.close(d.token),
+  shell_out: (d) => Sh.onOutput(d.text),
+  shell_done: (d) => Sh.onDone(d.code, d.cwd),
+  shell_exit: (d) => Sh.onExit(d.code),
   shutdown: () => {
     Transcript.note('J.A.R.V.I.S. has shut down. You can close this window.', 'warn');
     setState('idle');
@@ -702,6 +757,7 @@ function connect() {
     $('sb-link').classList.remove('down');
   };
   source.onerror = () => {
+    if (!$('sb-link').classList.contains('down')) Logs.add('warn', 'event stream dropped; reconnecting');
     $('sb-link').textContent = 'reconnecting';
     $('sb-link').classList.add('down');
     // EventSource reconnects on its own, but only for transport hiccups. A
@@ -720,7 +776,6 @@ function setState(next) {
     speaking: 'Speaking', working: 'Working',
   };
   const label = labels[next] || next || 'Ready';
-  $('status-label').textContent = label;
   $('sb-state').textContent = '';
   $('sb-state').append(el('i', 'sb-dot'), document.createTextNode(' ' + label));
   state.busy = !!next && next !== 'idle';
@@ -762,11 +817,13 @@ const Gauges = {
       $('sb-cpu').textContent = 'cpu ' + Math.round(data.cpu) + '%' +
         (data.ram != null ? ' · mem ' + Math.round(data.ram) + '%' : '');
     }
-    if (data.platform || data.processes != null) {
-      const uptime = data.uptime ? ', up ' + Math.floor(data.uptime / 3600) + 'h' : '';
-      const processes = data.processes != null ? ' - ' + data.processes + ' processes' : '';
-      $('machine-note').textContent = (data.platform || '') + processes + uptime;
-    }
+    facts('machine-facts', [
+      ['Platform', data.platform],
+      ['Processes', data.processes],
+      ['Uptime', data.uptime ? Math.floor(data.uptime / 3600) + 'h' : null],
+      ['Memory', data.ram_total_gb ? data.ram_used_gb + ' / ' + data.ram_total_gb + ' GB' : null],
+      ['Workspace', BOOT.workspaceName || null],
+    ]);
   },
 };
 
@@ -1014,21 +1071,21 @@ const Palette = {
 /* =============================================================================
    The shell
 
-   Three panes and two draggable seams. Widths live in CSS custom properties on
-   :root, so a drag is one property write per frame and the grid does the rest —
-   no layout maths in JavaScript, and nothing to keep in sync.
+   Three panes, two draggable seams, an icon strip down the outer edge. Widths
+   live in CSS custom properties on :root, so a drag is one property write per
+   frame and the grid does the rest — no layout maths here, nothing to sync.
    ============================================================================= */
 const Shell = {
-  MIN: { sidebar: 180, rail: 300 },
-  MAX_FRACTION: 0.55,          // no pane may take more than this much of the window
+  MIN: { sidebar: 190, rail: 300 },
+  MAX_FRACTION: 0.5,
 
   init() {
     this.node = $('shell');
     this.restore();
     this.seam('seam-left', 'sidebar', 1);
     this.seam('seam-right', 'rail', -1);
-    // Transitions are added only after the first paint, so a restored layout
-    // appears at its remembered width rather than sliding into it.
+    // Transitions go on after the first paint, so a restored layout appears at
+    // its remembered width rather than sliding into it.
     requestAnimationFrame(() => this.node.classList.add('animate'));
   },
 
@@ -1045,39 +1102,36 @@ const Shell = {
 
   restore() {
     const root = document.documentElement;
-    root.style.setProperty('--sidebar-width', this.read('sidebar', 248) + 'px');
-    root.style.setProperty('--rail-width', this.read('rail', 420) + 'px');
-    // Both panes start open on a window with room, closed on one without.
+    root.style.setProperty('--sidebar-width', this.read('sidebar', 244) + 'px');
+    root.style.setProperty('--rail-width', this.read('rail', 400) + 'px');
     const wide = window.innerWidth;
     this.set('sidebar', this.read('sidebar-open', wide > 1180 ? 1 : 0) === 1);
-    this.set('rail', this.read('rail-open', wide > 1100 ? 1 : 0) === 1);
+    this.set('rail', this.read('rail-open', wide > 1180 ? 1 : 0) === 1);
   },
 
   set(which, open) {
     this.node.classList.toggle('no-' + which, !open);
-    $(which === 'sidebar' ? 'btn-sidebar' : 'btn-rail').classList.toggle('on', open);
+    if (which === 'sidebar') $('btn-sidebar').classList.toggle('on', open);
+    else $('btn-rail').classList.toggle('on', open);
     this.write(which + '-open', open ? 1 : 0);
   },
 
-  toggle(which) {
-    this.set(which, this.node.classList.contains('no-' + which));
-  },
+  toggle(which) { this.set(which, this.node.classList.contains('no-' + which)); },
+  open(which) { if (this.node.classList.contains('no-' + which)) this.set(which, true); },
+  isOpen(which) { return !this.node.classList.contains('no-' + which); },
 
-  open(which) {
-    if (this.node.classList.contains('no-' + which)) this.set(which, true);
-  },
-
-  /* `direction` is +1 when the pane grows to the right (the sidebar) and -1
-     when it grows to the left (the rail). Width is measured from the window
-     edge rather than from a stored start value, which is what stops a drag
-     drifting when the pointer leaves and re-enters. */
+  /* `direction` is +1 when the pane grows rightward (the sidebar), -1 when it
+     grows leftward (the rail). Width is measured from the window edge rather
+     than a stored start value, which stops a drag drifting when the pointer
+     leaves and re-enters. */
   seam(id, which, direction) {
     const handle = $(id);
     const variable = '--' + which + '-width';
     let dragging = false;
 
     const apply = (clientX) => {
-      const raw = direction > 0 ? clientX : window.innerWidth - clientX;
+      const edge = which === 'rail' ? EDGE_WIDTH : 0;
+      const raw = direction > 0 ? clientX : window.innerWidth - clientX - edge;
       const width = clamp(raw, this.MIN[which], window.innerWidth * this.MAX_FRACTION);
       document.documentElement.style.setProperty(variable, Math.round(width) + 'px');
     };
@@ -1086,16 +1140,11 @@ const Shell = {
       dragging = true;
       handle.classList.add('active');
       document.body.classList.add('dragging');
-      // Suspend the grid transition for the duration, or the pane lags the
-      // pointer by a quarter second and the drag feels like it is on elastic.
-      this.node.classList.remove('animate');
+      this.node.classList.remove('animate');   // or the pane lags the pointer
       handle.setPointerCapture(event.pointerId);
       event.preventDefault();
     });
-
-    handle.addEventListener('pointermove', (event) => {
-      if (dragging) apply(event.clientX);
-    });
+    handle.addEventListener('pointermove', (event) => { if (dragging) apply(event.clientX); });
 
     const release = () => {
       if (!dragging) return;
@@ -1109,61 +1158,370 @@ const Shell = {
     handle.addEventListener('pointerup', release);
     handle.addEventListener('pointercancel', release);
 
-    // Keyboard resize, because a drag handle nobody can reach is not a control.
+    // Keyboard resize: a drag handle nobody can reach is not a control.
     handle.addEventListener('keydown', (event) => {
-      const step = event.shiftKey ? 40 : 12;
       if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
       event.preventDefault();
+      const step = (event.shiftKey ? 40 : 12) * (event.key === 'ArrowRight' ? 1 : -1) * direction;
       const current = parseInt(getComputedStyle(document.documentElement).getPropertyValue(variable), 10) || 0;
-      const delta = (event.key === 'ArrowRight' ? step : -step) * direction;
-      const width = clamp(current + delta, this.MIN[which], window.innerWidth * this.MAX_FRACTION);
+      const width = clamp(current + step, this.MIN[which], window.innerWidth * this.MAX_FRACTION);
       document.documentElement.style.setProperty(variable, Math.round(width) + 'px');
       this.write(which, Math.round(width));
     });
   },
 };
 
+const EDGE_WIDTH = 38;
+
 /* =============================================================================
-   The preview rail
+   The right panel
    ============================================================================= */
+const VIEWS = ['code', 'terminal', 'agent', 'logs', 'system'];
+
 const Rail = {
-  view: 'code',
+  view: 'terminal',
 
   init() {
-    document.querySelectorAll('.rail-tab').forEach((tab) => {
-      tab.onclick = () => this.show(tab.dataset.view);
+    document.querySelectorAll('.rail-tab, .edge-btn').forEach((button) => {
+      button.onclick = () => {
+        // Clicking the strip icon for the view already showing closes the rail,
+        // which is how every editor's activity bar behaves.
+        if (button.classList.contains('edge-btn') && this.view === button.dataset.view && Shell.isOpen('rail')) {
+          Shell.set('rail', false);
+          return;
+        }
+        this.show(button.dataset.view);
+      };
     });
+    this.show(this.remembered());
+  },
+
+  remembered() {
+    try {
+      const saved = localStorage.getItem('jarvis.view');
+      return VIEWS.indexOf(saved) === -1 ? 'terminal' : saved;
+    } catch (err) { return 'terminal'; }
   },
 
   show(view) {
+    if (VIEWS.indexOf(view) === -1) return;
     this.view = view;
     Shell.open('rail');
+    try { localStorage.setItem('jarvis.view', view); } catch (err) { /* private mode */ }
+
     document.querySelectorAll('.rail-tab').forEach((tab) => {
       const on = tab.dataset.view === view;
       tab.classList.toggle('on', on);
       tab.setAttribute('aria-selected', on ? 'true' : 'false');
-      if (on) this.unmark(view);
+    });
+    document.querySelectorAll('.edge-btn').forEach((button) => {
+      button.classList.toggle('on', button.dataset.view === view);
     });
     document.querySelectorAll('.rail-view').forEach((panel) => {
       panel.classList.toggle('on', panel.id === 'view-' + view);
     });
-    if (view === 'terminal') Term.toBottom(true);
+    this.unmark(view);
+    if (view === 'terminal') Sh.focus();
+    if (view === 'agent') Term.toBottom(true);
+    if (view === 'logs') Logs.toBottom(true);
   },
 
   /* A dot on a tab that has something new while you are looking elsewhere. */
   mark(view) {
-    if (this.view === view) return;
-    const tab = document.querySelector('.rail-tab[data-view="' + view + '"]');
-    if (tab && !tab.querySelector('.pip')) tab.appendChild(el('span', 'pip'));
+    if (this.view === view && Shell.isOpen('rail')) return;
+    document.querySelectorAll('[data-view="' + view + '"]').forEach((node) => {
+      if (!node.querySelector('.pip')) node.appendChild(el('span', 'pip'));
+    });
   },
 
   unmark(view) {
-    const tab = document.querySelector('.rail-tab[data-view="' + view + '"]');
-    const pip = tab && tab.querySelector('.pip');
-    if (pip) pip.remove();
+    document.querySelectorAll('[data-view="' + view + '"] .pip').forEach((pip) => pip.remove());
   },
 };
 
+/* =============================================================================
+   Logs
+
+   The three columns every log viewer has, because they are the three you
+   actually scan by: when, how bad, and what. Fed from the same event stream as
+   everything else, plus the instrument calls, which is what makes it useful —
+   a log that only carries system lines tells you nothing about the turn.
+   ============================================================================= */
+/* =============================================================================
+   The system shell
+
+   PowerShell on Windows, the login shell everywhere else, running as one
+   long-lived process on the server so `cd` sticks and variables persist. This
+   half is only a view: it echoes what you typed against the prompt, appends the
+   lines the server streams back, and draws a new prompt when the exit status
+   arrives. Command history on Up/Down, because a terminal without it is a toy.
+
+   It is line-oriented, not a terminal emulator — there is no PTY behind it, so
+   a full-screen program like `vim` or `top` has nothing to draw into. Ordinary
+   commands, which is what a pane beside a conversation is actually for, work.
+   ============================================================================= */
+const Sh = {
+  history: [],
+  at: 0,
+  busy: false,
+  ready: false,
+  info: {},
+
+  init() {
+    this.pane = $('shell-pane');
+    this.scroll = $('shell-scroll');
+    this.out = $('shell-out');
+    this.input = $('shell-input');
+    this.info = BOOT.shell || {};
+
+    if (this.info.disabled) return this.unavailable('The shell pane is switched off in your configuration.');
+    if (!this.info.available) return this.unavailable('No shell was found on this machine.');
+
+    this.setPrompt(this.info.cwd || '');
+    $('shell-status').textContent = this.info.name + ' · not started';
+
+    // Clicking anywhere in the pane puts the cursor on the prompt, the way a
+    // terminal does. Not when the operator is selecting output to copy.
+    this.pane.addEventListener('mousedown', (event) => {
+      if (event.target === this.input) return;
+      if (String(window.getSelection())) return;
+      setTimeout(() => this.focus(), 0);
+    });
+    this.input.addEventListener('keydown', (event) => this.keys(event));
+    $('btn-shell-clear').onclick = () => { this.out.innerHTML = ''; this.focus(); };
+    $('btn-shell-stop').onclick = () => this.interrupt();
+    $('btn-shell-restart').onclick = () => {
+      this.line('meta', '— restarting the shell —');
+      api('/api/shell', { restart: true }).then((r) => this.adopt(r)).catch(() => {});
+    };
+  },
+
+  unavailable(why) {
+    $('shell-row').hidden = true;
+    this.out.appendChild(el('div', 'shell-unavailable', why));
+    $('shell-status').textContent = 'unavailable';
+  },
+
+  focus() { if (this.input && !$('shell-row').hidden) this.input.focus({ preventScroll: true }); },
+
+  /* A full path eats the width a terminal needs for the command. Shorten it
+     the way a shell prompt does: home becomes ~, and anything still long keeps
+     its last two segments behind an ellipsis. */
+  short(path) {
+    let text = String(path || '');
+    const home = BOOT.home || '';
+    if (home && text.indexOf(home) === 0) text = '~' + text.slice(home.length);
+    if (text.length <= 34) return text;
+    const sep = text.indexOf('\\') !== -1 ? '\\' : '/';
+    const parts = text.split(sep).filter(Boolean);
+    return parts.length <= 2 ? text : '…' + sep + parts.slice(-2).join(sep);
+  },
+
+  setPrompt(cwd) {
+    this.cwd = cwd || '';
+    const shape = this.info.prompt || '{cwd} $ ';
+    const line = shape.replace('{cwd}', this.short(this.cwd)).trimEnd();
+    $('shell-prompt').textContent = line;
+    $('shell-prompt').title = this.cwd;
+  },
+
+  adopt(result) {
+    if (!result) return;
+    if (result.cwd) this.setPrompt(result.cwd);
+    if (result.name) this.info.name = result.name;
+    this.setBusy(false);
+    $('shell-status').textContent = this.info.name + ' · ready';
+  },
+
+  line(kind, text) {
+    const row = el('div', 'sline ' + (kind || ''));
+    row.textContent = text;
+    this.out.appendChild(row);
+    this.trim();
+    this.toBottom();
+    return row;
+  },
+
+  /* An unbounded scrollback is a memory leak with a cursor in it. */
+  trim() {
+    const excess = this.out.children.length - 2000;
+    for (let i = 0; i < excess; i++) this.out.removeChild(this.out.firstChild);
+  },
+
+  toBottom() { this.scroll.scrollTop = this.scroll.scrollHeight; },
+
+  setBusy(busy) {
+    this.busy = busy;
+    this.pane.classList.toggle('busy', busy);
+    this.input.disabled = false;   // typing ahead is allowed; a terminal allows it
+  },
+
+  run(text) {
+    const command = String(text == null ? this.input.value : text);
+    // The echo is drawn here rather than by the shell: without a PTY the shell
+    // never echoes, and a terminal that does not show what you typed is useless.
+    const row = this.line('echo', '');
+    row.append(el('span', 'p', $('shell-prompt').textContent + ' '), document.createTextNode(command));
+
+    this.input.value = '';
+    if (command.trim()) {
+      this.history.push(command);
+      if (this.history.length > 400) this.history.shift();
+    }
+    this.at = this.history.length;
+    this.setBusy(true);
+    this.toBottom();
+    $('shell-status').textContent = this.info.name + ' · running';
+    api('/api/shell', { input: command }).then((result) => {
+      if (result && result.ok === false) {
+        this.line('fail', result.error || 'the shell refused that');
+        this.setBusy(false);
+      }
+    }).catch((err) => {
+      this.line('fail', 'could not reach the shell: ' + err.message);
+      this.setBusy(false);
+    });
+  },
+
+  interrupt() {
+    api('/api/shell', { interrupt: true }).catch(() => {});
+    this.line('meta', '^C');
+    this.setBusy(false);
+  },
+
+  keys(event) {
+    if (event.key === 'Enter') { event.preventDefault(); this.run(); return; }
+    if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      if (!this.history.length) return;
+      this.at = Math.max(0, this.at - 1);
+      this.input.value = this.history[this.at] || '';
+      return;
+    }
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      if (!this.history.length) return;
+      this.at = Math.min(this.history.length, this.at + 1);
+      this.input.value = this.at === this.history.length ? '' : this.history[this.at];
+      return;
+    }
+    if (event.key.toLowerCase() === 'c' && event.ctrlKey && !String(window.getSelection())) {
+      event.preventDefault(); this.interrupt(); return;
+    }
+    if (event.key.toLowerCase() === 'l' && event.ctrlKey) {
+      event.preventDefault(); this.out.innerHTML = ''; return;
+    }
+    // Esc belongs to the shell while the cursor is in it, not to the app.
+    if (event.key === 'Escape') { event.stopPropagation(); this.input.value = ''; }
+  },
+
+  // -- events from the server -----------------------------------------------
+  onOutput(text) { this.line('', text); Rail.mark('terminal'); },
+
+  onDone(code, cwd) {
+    this.setPrompt(cwd);
+    if (code) this.line('exit', '').append(document.createTextNode('exit '), el('b', '', String(code)));
+    this.setBusy(false);
+    this.ready = true;
+    $('shell-status').textContent = this.info.name + ' · ' + (code ? 'exit ' + code : 'ready');
+  },
+
+  onExit(code) {
+    this.line('meta', '— the shell exited' + (code == null ? '' : ' (' + code + ')') + '; Restart to start a new one —');
+    this.setBusy(false);
+    $('shell-status').textContent = this.info.name + ' · stopped';
+  },
+};
+
+const LEVELS = ['all', 'info', 'tool', 'warn', 'error'];
+
+const Logs = {
+  lines: [],
+  filter: 'all',
+  atBottom: true,
+  LIMIT: 1000,
+
+  init() {
+    this.node = $('logs');
+    this.node.addEventListener('scroll', () => {
+      const gap = this.node.scrollHeight - this.node.scrollTop - this.node.clientHeight;
+      this.atBottom = gap < 40;
+    }, { passive: true });
+
+    const bar = $('log-filters');
+    LEVELS.forEach((level) => {
+      const button = el('button', 'log-filter' + (level === 'all' ? ' on' : ''));
+      button.dataset.level = level;
+      button.append(document.createTextNode(level), el('span', 'n', '0'));
+      button.onclick = () => this.setFilter(level);
+      bar.appendChild(button);
+    });
+    $('btn-log-clear').onclick = () => { this.lines = []; this.render(); };
+    this.add('info', 'Desktop front end attached to the running session.');
+  },
+
+  add(level, message) {
+    const now = new Date();
+    this.lines.push({
+      level: level,
+      message: String(message == null ? '' : message),
+      at: now.toTimeString().slice(0, 8),
+    });
+    if (this.lines.length > this.LIMIT) this.lines.splice(0, this.lines.length - this.LIMIT);
+    this.render();
+    if (level === 'error' || level === 'warn') Rail.mark('logs');
+  },
+
+  setFilter(level) {
+    this.filter = level;
+    document.querySelectorAll('.log-filter').forEach((button) => {
+      button.classList.toggle('on', button.dataset.level === level);
+    });
+    this.render();
+    this.toBottom(true);
+  },
+
+  counts() {
+    const tally = { all: this.lines.length, info: 0, tool: 0, warn: 0, error: 0 };
+    this.lines.forEach((line) => {
+      if (tally[line.level] === undefined) tally.info += 1;
+      else tally[line.level] += 1;
+    });
+    return tally;
+  },
+
+  render() {
+    const tally = this.counts();
+    document.querySelectorAll('.log-filter').forEach((button) => {
+      button.querySelector('.n').textContent = String(tally[button.dataset.level] || 0);
+    });
+
+    const shown = this.filter === 'all'
+      ? this.lines
+      : this.lines.filter((line) => line.level === this.filter);
+
+    const batch = document.createDocumentFragment();
+    shown.forEach((line) => {
+      const row = el('div', 'log-line');
+      row.dataset.level = line.level;
+      row.append(
+        el('span', 'at', line.at),
+        el('span', 'lv', line.level),
+        el('span', 'msg', line.message),
+      );
+      batch.appendChild(row);
+    });
+    this.node.innerHTML = '';
+    this.node.appendChild(batch);
+    $('log-count').textContent = shown.length + (shown.length === 1 ? ' line' : ' lines');
+    this.toBottom();
+  },
+
+  toBottom(force) {
+    if (!force && !this.atBottom) return;
+    this.node.scrollTop = this.node.scrollHeight;
+  },
+};
 /* =============================================================================
    The workspace tree
 
@@ -1308,13 +1666,39 @@ const LINE_COMMENT = {
   sql: '--', lua: '--', haskell: '--',
 };
 
-function highlight(line, language) {
+/* Openers that run past the end of a line. Without these a Python docstring is
+   tokenised as code for its whole length, which is the single most obvious way
+   a highlighter can look broken. `state` is threaded down the file by the
+   caller and carries which one, if any, is still open. */
+const BLOCK_MARKS = {
+  python: ['\u0022\u0022\u0022', "'''"],
+  javascript: ['/*'], typescript: ['/*'], c: ['/*'], cpp: ['/*'], java: ['/*'],
+  css: ['/*'], rust: ['/*'], go: ['/*'], php: ['/*'], swift: ['/*'], kotlin: ['/*'],
+  html: ['<!--'], xml: ['<!--'], markdown: [],
+};
+const BLOCK_CLOSE = { '<!--': '-->', '/*': '*/' };
+
+function highlight(line, language, state) {
   const escaped = esc(line);
-  if (!language || language === 'text' || language === 'markdown') return escaped;
+  if (!language || language === 'text') return escaped;
 
   const words = KEYWORDS[language];
   const keywords = words ? new Set(words.split(' ')) : null;
   const comment = LINE_COMMENT[language];
+  const marks = BLOCK_MARKS[language] || [];
+
+  // Already inside a block that opened on an earlier line: colour up to its
+  // close and hand the rest back to the normal pass.
+  if (state && state.open) {
+    const closer = esc(BLOCK_CLOSE[state.open] || state.open);
+    const at = escaped.indexOf(closer);
+    const cls = state.open === '/*' || state.open === '<!--' ? 'tok-com' : 'tok-str';
+    if (at === -1) return '<span class="' + cls + '">' + (escaped || ' ') + '</span>';
+    state.open = null;
+    const head = escaped.slice(0, at + closer.length);
+    return '<span class="' + cls + '">' + head + '</span>' +
+           highlight(unesc(escaped.slice(at + closer.length)), language, state);
+  }
 
   // One pass, left to right. Strings and comments swallow everything inside
   // them, which is the only way a single regex sweep gets those two right.
@@ -1335,21 +1719,32 @@ function highlight(line, language) {
       continue;
     }
 
+    // A block that opens and does not close on this line takes the remainder
+    // and is remembered for the next one.
+    let opened = null;
+    for (let m = 0; m < marks.length; m++) {
+      if (rest.startsWith(esc(marks[m]))) { opened = marks[m]; break; }
+    }
+    if (opened) {
+      const closer = esc(BLOCK_CLOSE[opened] || opened);
+      const from = esc(opened).length;
+      const at = rest.indexOf(closer, from);
+      const cls = opened === '/*' || opened === '<!--' ? 'tok-com' : 'tok-str';
+      if (at === -1) {
+        if (state) state.open = opened;
+        out += '<span class="' + cls + '">' + rest + '</span>';
+        break;
+      }
+      const chunk = rest.slice(0, at + closer.length);
+      out += '<span class="' + cls + '">' + chunk + '</span>';
+      i += chunk.length;
+      continue;
+    }
+
     if (comment && rest.startsWith(esc(comment))) {
       out += '<span class="tok-com">' + rest + '</span>';
       break;
     }
-    if (language === 'css' || language === 'c' || language === 'cpp' || language === 'javascript' ||
-        language === 'typescript' || language === 'java' || language === 'rust' || language === 'go') {
-      if (rest.startsWith('/*')) {
-        const close = rest.indexOf('*/');
-        const chunk = close === -1 ? rest : rest.slice(0, close + 2);
-        out += '<span class="tok-com">' + chunk + '</span>';
-        i += chunk.length;
-        continue;
-      }
-    }
-
     const quote = rest.match(/^(&quot;|&#39;|`)/);
     if (quote) {
       const mark = quote[1];
@@ -1460,6 +1855,7 @@ const Code = {
     this.renderCrumbs(file);
     this.renderBody(file);
     $('sb-file').textContent = file.name + ' · ' + file.lines + ' lines';
+    $('artifact-count').textContent = String(this.files.size);
   },
 
   close(path) {
@@ -1474,6 +1870,7 @@ const Code = {
   },
 
   blank() {
+    $('artifact-count').textContent = String(this.files.size);
     $('code-empty').hidden = false;
     $('code-scroll').hidden = true;
     $('code-foot').hidden = true;
@@ -1519,6 +1916,7 @@ const Code = {
     const lines = file.content.split('\n');
     // A document fragment keeps a four-thousand-line file to one reflow.
     const batch = document.createDocumentFragment();
+    const state = { open: null };   // carries an unclosed docstring down the file
     lines.forEach((line, i) => {
       const row = document.createElement('tr');
       const gutter = document.createElement('td');
@@ -1526,7 +1924,7 @@ const Code = {
       gutter.textContent = String(i + 1);
       const src = document.createElement('td');
       src.className = 'src';
-      src.innerHTML = highlight(line, file.language) || '&nbsp;';
+      src.innerHTML = highlight(line, file.language, state) || '&nbsp;';
       row.append(gutter, src);
       batch.appendChild(row);
     });
@@ -1684,71 +2082,211 @@ function toast(text) {
   $('toasts').appendChild(node);
   setTimeout(() => {
     node.classList.add('leaving');
-    setTimeout(() => node.remove(), 260);
-  }, 2800);
+    setTimeout(() => node.remove(), 220);
+  }, 2600);
 }
 
+/* =============================================================================
+   Sessions
+
+   One agent core, several surfaces: a "new session" clears the shared memory
+   rather than forking a second assistant, which is exactly what /clear does in
+   the terminal. The list is a record of this window's turns, grouped the way
+   every chat client groups them — by when, not by index.
+   ============================================================================= */
 const Sessions = {
   items: [],
+  pinned: [],
+  query: '',
 
   init() {
     $('btn-new').onclick = () => this.create();
-    this.add('Current session', true);
+    $('btn-foot-new').onclick = () => this.create();
+    $('btn-swap').onclick = () => Palette.show();
+    $('session-search').addEventListener('input', (event) => {
+      this.query = event.target.value.trim().toLowerCase();
+      this.render();
+    });
+    this.items.push({ label: 'Current session', at: Date.now(), live: true });
+    this.render();
   },
 
-  add(label, active) {
-    const item = { label: label, at: Date.now() };
-    this.items.unshift(item);
-    this.render(active ? 0 : -1);
+  /* The first thing the operator says becomes the session's name, the way a
+     chat client titles a thread. Until then it is "Current session". */
+  name(text) {
+    const live = this.items.find((item) => item.live);
+    if (!live || live.named) return;
+    live.named = true;
+    live.label = text.length > 42 ? text.slice(0, 41) + '…' : text;
+    $('session-title').textContent = live.label;
+    this.render();
   },
 
-  /* One agent core, many surfaces: starting a new session clears the shared
-     memory rather than forking a second assistant, which is what /clear does
-     in the terminal too. */
   create() {
     Composer.send('/clear');
-    this.items[0] = { label: 'Session ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), at: Date.now() };
-    this.render(0);
-    $('session-title').textContent = this.items[0].label;
+    this.items.forEach((item) => { item.live = false; });
+    this.items.unshift({ label: 'Current session', at: Date.now(), live: true });
+    $('session-title').textContent = 'New session';
+    this.render();
+    Composer.input.focus();
   },
 
-  render(activeIndex) {
+  select(item, event) {
+    // Shift-click pins, exactly as the empty-state hint promises.
+    if (event && event.shiftKey) {
+      const at = this.pinned.indexOf(item);
+      if (at === -1) this.pinned.unshift(item); else this.pinned.splice(at, 1);
+      this.render();
+      return;
+    }
+    toast('This window keeps one live session — the terminal and the app share it.');
+  },
+
+  /* Today / Yesterday / a month name. The grouping every chat client uses. */
+  group(at) {
+    const then = new Date(at);
+    const now = new Date();
+    const days = Math.floor((now.setHours(0, 0, 0, 0) - new Date(at).setHours(0, 0, 0, 0)) / 86400000);
+    if (days <= 0) return 'Today';
+    if (days === 1) return 'Yesterday';
+    if (days < 7) return 'This week';
+    return then.toLocaleDateString([], { month: 'long' });
+  },
+
+  row(item) {
+    const node = el('li', item.live ? 'on' : '');
+    node.append(el('span', 'dot'));
+    node.append(el('span', 'label', item.label));
+    if (this.pinned.indexOf(item) !== -1) node.title = 'Pinned — shift-click to unpin';
+    const stamp = el('time', '', new Date(item.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+    node.append(stamp);
+    node.onclick = (event) => this.select(item, event);
+    return node;
+  },
+
+  matches(item) {
+    return !this.query || item.label.toLowerCase().indexOf(this.query) !== -1;
+  },
+
+  render() {
+    const pinnedList = $('pinned-list');
+    pinnedList.innerHTML = '';
+    const pins = this.pinned.filter((item) => this.matches(item));
+    pins.forEach((item) => pinnedList.appendChild(this.row(item)));
+    $('pinned-empty').hidden = pins.length > 0;
+
     const list = $('session-list');
     list.innerHTML = '';
-    this.items.slice(0, 8).forEach((item, i) => {
-      const row = el('li', i === (activeIndex < 0 ? 0 : activeIndex) ? 'on' : '');
-      row.append(el('span', '', item.label));
-      list.appendChild(row);
+    const shown = this.items.filter((item) => this.matches(item));
+    let group = null;
+    shown.forEach((item) => {
+      const label = this.group(item.at);
+      if (label !== group) {
+        group = label;
+        list.appendChild(el('li', 'group', label));
+      }
+      list.appendChild(this.row(item));
     });
+    $('session-count').textContent = String(this.items.length);
   },
 };
 
-const SUGGESTIONS = [
-  'What is this machine doing right now?',
-  'Open jarvis/theme.py and explain the derivation',
-  'Run a diagnostics sweep',
-  'Make the interface violet',
+/* =============================================================================
+   The keyboard sheet
+   ============================================================================= */
+const KEYMAP = [
+  ['Conversation', [
+    ['Send', ['Enter']],
+    ['Newline', ['Shift', 'Enter']],
+    ['Command completion', ['/']],
+    ['Interrupt the turn', ['Esc']],
+    ['New session', ['Ctrl', 'N']],
+  ]],
+  ['Panels', [
+    ['Command palette', ['Ctrl', 'K']],
+    ['Appearance', ['Ctrl', '/']],
+    ['Right panel', ['Ctrl', 'B']],
+    ['Sidebar', ['Ctrl', '\\']],
+    ['Code · Terminal · Agent · Logs · System', ['Ctrl', '1–5']],
+    ['This sheet', ['?']],
+  ]],
+  ['Code', [
+    ['Close the open file', ['Ctrl', 'W']],
+  ]],
+  ['Terminal', [
+    ['Run', ['Enter']],
+    ['History', ['\u2191', '\u2193']],
+    ['Interrupt', ['Ctrl', 'C']],
+    ['Clear the scrollback', ['Ctrl', 'L']],
+  ]],
 ];
 
+const Keys = {
+  init() {
+    const sheet = $('keymap');
+    KEYMAP.forEach((section) => {
+      sheet.appendChild(el('div', 'sect', section[0]));
+      section[1].forEach((entry) => {
+        sheet.appendChild(el('dt', '', entry[0]));
+        const keys = el('dd');
+        entry[1].forEach((key) => keys.appendChild(el('kbd', 'hint', key)));
+        sheet.appendChild(keys);
+      });
+    });
+    $('keys-wrap').addEventListener('click', (event) => {
+      if (event.target.id === 'keys-wrap') this.hide();
+    });
+    $('btn-keys').onclick = () => this.show();
+  },
+  show() { $('keys-wrap').hidden = false; },
+  hide() { $('keys-wrap').hidden = true; },
+  get open() { return !$('keys-wrap').hidden; },
+};
+
+/* =============================================================================
+   Boot
+   ============================================================================= */
+const SUGGESTIONS = [
+  'What is this machine doing right now?',
+  'Open jarvis/theme.py and walk me through it',
+  'Run a diagnostics sweep',
+];
+
+function facts(host, rows) {
+  const node = $(host);
+  node.innerHTML = '';
+  rows.forEach((row) => {
+    if (row[1] === null || row[1] === undefined || row[1] === '') return;
+    node.append(el('dt', '', row[0]), el('dd', '', String(row[1])));
+  });
+}
+
 function boot() {
-  $('session-sub').textContent = BOOT.agent || 'J.A.R.V.I.S.';
-  $('welcome-title').textContent = BOOT.title || 'Sir';
-  $('model-name').textContent = BOOT.model || '-';
-  $('model-host').textContent = BOOT.host || '';
-  $('sb-model').textContent = BOOT.model || '-';
+  $('chip-model').textContent = BOOT.model || 'no model';
+  $('sb-model').textContent = BOOT.model || '—';
   $('sb-cwd').textContent = BOOT.workspace || '';
-  $('cwd-label').textContent = BOOT.workspace || '';
+  $('cwd-label').textContent = BOOT.workspace || '~';
   document.title = (BOOT.agent || 'J.A.R.V.I.S.') + ' Desktop';
 
   const tools = BOOT.tools || [];
+  const protocols = BOOT.protocols || [];
   $('tool-count').textContent = String(tools.length);
+  $('cap-count').textContent = String(tools.length + protocols.length);
   tools.forEach((name) => $('tool-list').appendChild(el('li', '', name)));
-  (BOOT.protocols || []).forEach((name) => {
+  protocols.forEach((name) => {
     const chip = el('li', 'action', name);
     chip.title = 'Run the ' + name + ' protocol';
     chip.onclick = () => Composer.send('/protocol ' + name);
     $('protocol-list').appendChild(chip);
   });
+
+  facts('model-facts', [
+    ['Model', BOOT.model || '—'],
+    ['Host', BOOT.host || '—'],
+    ['Mode', BOOT.standalone ? 'standalone' : 'attached to a terminal'],
+    ['Turn', 'not measured yet'],
+  ]);
+  facts('machine-facts', [['Workspace', BOOT.workspaceName || '—']]);
 
   SUGGESTIONS.forEach((text) => {
     const button = el('button', 'suggestion', text);
@@ -1758,15 +2296,18 @@ function boot() {
 
   applyVariables(BOOT.variables);
   Shell.init();
-  Rail.init();
   Transcript.init();
   Composer.init();
   Palette.init();
   Studio.init();
   Code.init();
   Term.init();
+  Logs.init();
+  Sh.init();
+  Rail.init();
   Tree.init();
   Sessions.init();
+  Keys.init();
   setState(BOOT.state || 'idle');
 
   $('btn-palette').onclick = () => Studio.toggle();
@@ -1774,21 +2315,37 @@ function boot() {
   $('btn-rail').onclick = () => Shell.toggle('rail');
   $('btn-sidebar').onclick = () => Shell.toggle('sidebar');
   $('scrim').onclick = () => Studio.hide();
+  $('btn-attach').onclick = () => { Rail.show('code'); Shell.open('sidebar'); };
+  $('model-chip').onclick = () => { Rail.show('system'); };
+  $('btn-mic').onclick = () => Composer.send('talk');
+  $('btn-mute').onclick = () => Composer.send('quiet');
+  $('btn-mute-all').onclick = () => Composer.send('quiet');
+  document.querySelectorAll('.nav-item[data-rail]').forEach((item) => {
+    item.onclick = () => Rail.show(item.dataset.rail);
+  });
 
   document.addEventListener('keydown', (event) => {
     const meta = event.ctrlKey || event.metaKey;
+    const typing = !!event.target.closest('input, textarea');
+
     if (meta && event.key.toLowerCase() === 'k') { event.preventDefault(); Palette.show(); }
     else if (meta && event.key === '/') { event.preventDefault(); Studio.toggle(); }
     else if (meta && event.key.toLowerCase() === 'b') { event.preventDefault(); Shell.toggle('rail'); }
     else if (meta && event.key === '\\') { event.preventDefault(); Shell.toggle('sidebar'); }
-    else if (meta && event.key >= '1' && event.key <= '3') {
+    else if (meta && event.key.toLowerCase() === 'n') { event.preventDefault(); Sessions.create(); }
+    else if (meta && event.key >= '1' && event.key <= '5') {
       event.preventDefault();
-      Rail.show(['code', 'terminal', 'system'][Number(event.key) - 1]);
+      Rail.show(VIEWS[Number(event.key) - 1]);
+    } else if (meta && event.key.toLowerCase() === 'w' && Rail.view === 'code' && Code.current) {
+      event.preventDefault(); Code.close(Code.current);
+    } else if (event.key === '?' && !typing) {
+      event.preventDefault(); Keys.show();
     } else if (event.key === 'Escape') {
-      if (!$('palette-wrap').hidden) Palette.hide();
+      if (Keys.open) Keys.hide();
+      else if (!$('palette-wrap').hidden) Palette.hide();
       else if (Studio.open) Studio.hide();
       else if (state.busy) { api('/api/interrupt', {}).catch(() => {}); toast('Interrupted.'); }
-    } else if (!event.target.closest('input, textarea') && event.key.length === 1) {
+    } else if (!typing && event.key.length === 1) {
       Composer.input.focus();     // start typing anywhere, land in the composer
     }
   });

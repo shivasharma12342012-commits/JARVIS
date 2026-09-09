@@ -339,7 +339,8 @@ def test_a_protocol_palette_change_recolours_the_window():
 # ══════════════════════════════════════════════════════════════════════════════════════
 def test_the_page_arrives_with_the_theme_and_the_token_already_in_it(app):
     html = _request(app, "/").read().decode("utf-8")
-    assert "__JARVIS_THEME_CSS__" not in html and "--accent: #22d3ee;" in html
+    assert "__JARVIS_THEME_CSS__" not in html
+    assert "--accent: " + theme_mod.PRESETS["arc_reactor"].seed + ";" in html
     assert "__JARVIS_BOOT__" not in html and '"presets"' in html
     # Subresources cannot send a header, so their URLs must carry the token.
     assert f"/static/app.css?token={app.token}" in html
@@ -354,8 +355,8 @@ def test_the_front_end_files_are_all_served(app):
 def test_the_boot_state_describes_the_session(app):
     state = get_json(app, "/api/state")
     assert state["model"] == "fake-model" and state["tools"] == ["alpha", "beta"]
-    assert state["theme"]["seed"] == "#22d3ee"
-    assert state["variables"]["--accent"] == "#22d3ee"
+    assert state["theme"]["seed"] == theme_mod.PRESETS["arc_reactor"].seed
+    assert state["variables"]["--accent"] == theme_mod.PRESETS["arc_reactor"].seed
     assert len(state["presets"]) == len(theme_mod.PRESETS)
     assert state["modes"] == list(theme_mod.MODES)
 
@@ -694,3 +695,104 @@ def test_the_file_routes_need_the_session_token(app):
 def test_the_boot_state_names_the_workspace(app):
     state = get_json(app, "/api/state")
     assert state["workspace"] and state["workspaceName"]
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════
+# The Terminal pane's shell, over the wire
+# ══════════════════════════════════════════════════════════════════════════════════════
+def _settle(predicate, timeout=6.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def test_the_boot_state_describes_the_shell(app):
+    described = get_json(app, "/api/state")["shell"]
+    assert described["available"] is True
+    assert described["name"] and described["prompt"] and described["cwd"]
+
+
+def test_the_shell_is_not_started_until_it_is_used(app):
+    """A window that never opens the pane never spawns a process."""
+    assert app._shell is None
+    assert get_json(app, "/api/state")["shell"]["running"] is False
+
+
+def test_a_line_runs_in_the_shell_and_streams_back(app):
+    # Waited on the echoed text, not on shell_done: start() fires a priming
+    # completion of its own, and stopping at that one reads nothing.
+    frames, worker = read_events(app, seconds=4.0, until="streamed-to-the-window")
+    post_json(app, "/api/shell", {"input": "echo streamed-to-the-window"})
+    worker.join(timeout=6)
+    blob = "".join(frames)
+    assert "streamed-to-the-window" in blob
+    assert '"kind": "shell_done"' in blob
+
+
+def test_the_working_directory_comes_back_with_each_completion(app):
+    frames, worker = read_events(app, seconds=3.0)   # no early break: collect them all
+    post_json(app, "/api/shell", {"input": "cd .."})
+    worker.join(timeout=6)
+    payloads = [
+        json.loads(line[len("data: "):])
+        for line in "".join(frames).splitlines()
+        if line.startswith("data: ") and '"kind": "shell_done"' in line
+    ]
+    # The priming completion, then the cd — and the cd moved us.
+    assert len(payloads) >= 2
+    assert payloads[-1]["cwd"] and payloads[-1]["cwd"] != payloads[0]["cwd"]
+
+
+def test_the_shell_route_needs_the_session_token(app):
+    with pytest.raises(urllib.error.HTTPError) as caught:
+        post_json(app, "/api/shell", {"input": "echo nope"}, token="wrong")
+    assert caught.value.code == 403
+
+
+def test_the_shell_route_rejects_a_forged_host(app):
+    with pytest.raises(urllib.error.HTTPError) as caught:
+        post_json(app, "/api/shell", {"input": "echo nope"},
+                  headers={"Host": "attacker.example.com"})
+    assert caught.value.code == 403
+
+
+def test_a_shell_request_with_nothing_to_run_is_refused(app):
+    assert post_json(app, "/api/shell", {})["ok"] is False
+
+
+def test_interrupt_and_restart_are_reachable(app):
+    post_json(app, "/api/shell", {"input": "echo warm"})
+    assert _settle(lambda: app._shell is not None)
+    assert "ok" in post_json(app, "/api/shell", {"interrupt": True})
+    restarted = post_json(app, "/api/shell", {"restart": True})
+    assert restarted["ok"] is True and restarted["running"] is True
+
+
+def test_the_pane_can_be_switched_off_entirely(app, monkeypatch):
+    """DESKTOP_SHELL_ENABLED=false removes the pane and refuses the route."""
+    from config import settings
+
+    monkeypatch.setattr(settings, "DESKTOP_SHELL_ENABLED", False)
+    assert app.shell() is None
+    described = get_json(app, "/api/state")["shell"]
+    assert described["available"] is False and described["disabled"] is True
+    refused = post_json(app, "/api/shell", {"input": "echo nope"})
+    assert refused["ok"] is False and "switched off" in refused["error"]
+
+
+def test_shell_traffic_is_not_replayed_to_a_new_window(app):
+    """A thousand lines of scrollback into a reloaded tab helps nobody."""
+    assert "shell_out" in desktop_mod._EPHEMERAL_EVENTS
+    assert "shell_done" in desktop_mod._EPHEMERAL_EVENTS
+    assert "shell_exit" in desktop_mod._EPHEMERAL_EVENTS
+
+
+def test_stopping_the_app_stops_the_shell(app):
+    post_json(app, "/api/shell", {"input": "echo warm"})
+    assert _settle(lambda: app._shell is not None and app._shell.running)
+    session = app._shell
+    app.stop()
+    assert _settle(lambda: not session.running)

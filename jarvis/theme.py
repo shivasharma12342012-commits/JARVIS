@@ -276,21 +276,29 @@ class Theme:
     ``secondary``  the supporting hue. Derived 40° off the seed when omitted.
     ``mode``       ``dark`` (default), ``midnight`` (true black) or ``light``.
     ``tint``       0..1: how much of the seed's hue bleeds into the background.
-                   0 is neutral grey, 1 is unmistakably *your* colour.
+                   0 is neutral grey, 1 is unmistakably *your* colour. It
+                   defaults low on purpose — see the note on restraint below.
     ``contrast``   0..1: how far the surfaces separate from the background.
     ``radius``     corner rounding in pixels, 0 (severe) to 28 (soft).
     ``glow``       0..1: strength of the accent bloom behind live elements.
     ``overrides``  raw CSS variable overrides for anyone who wants the last word.
+
+    A note on restraint. The shipped default is grey — near-monochrome, with the
+    accent reaching only the things that need to be noticed: the selected row,
+    the caret, a status dot, a focus ring. A tool you keep open all day should
+    not be shouting a hue at you, and an interface where every surface is tinted
+    reads as a demo rather than an instrument. The colour is *there* — turn
+    ``tint`` up and it floods the whole room — but you have to ask for it.
     """
 
     name: str = "Custom"
-    seed: str = "#22d3ee"
+    seed: str = "#8b9099"
     secondary: str = ""
     mode: str = "dark"
-    tint: float = 0.55
-    contrast: float = 0.5
-    radius: int = 14
-    glow: float = 0.6
+    tint: float = 0.10
+    contrast: float = 0.55
+    radius: int = 8
+    glow: float = 0.10
     font: str = "system"
     overrides: dict[str, str] = field(default_factory=dict)
 
@@ -403,10 +411,11 @@ class Theme:
             # near-black they are light, on near-white they are dirt. Hence a
             # token rather than one opacity in the stylesheet.
             "--bloom-opacity": str(
-                round((0.30 + 0.45 * self.glow) if self.dark else (0.05 + 0.13 * self.glow), 3)
+                round((0.55 * self.glow) if self.dark else (0.20 * self.glow), 3)
             ),
             "--font-ui": _FONT_STACKS.get(self.font, _FONT_STACKS["system"]),
             "--font-mono": _FONT_STACKS["mono"],
+            "--font-display": _FONT_STACKS["display"],
             "--color-scheme": "dark" if self.dark else "light",
         }
         tokens.update({k: v for k, v in self.overrides.items() if k.startswith("--")})
@@ -519,6 +528,13 @@ _FONT_STACKS: dict[str, str] = {
     ),
     "grotesk": '"Space Grotesk", "Inter", -apple-system, "Segoe UI", Roboto, sans-serif',
     "serif": '"Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif',
+    # High-contrast serif for the wordmark only. Every face here ships with an
+    # operating system, so the display type is right on the first paint and
+    # never waits on a network that may not be there.
+    "display": (
+        'Didot, "Bodoni MT", "Playfair Display", "Big Caslon", '
+        '"Hoefler Text", "Palatino Linotype", Palatino, Georgia, serif'
+    ),
     "mono": (
         '"JetBrains Mono", "SF Mono", "Cascadia Code", "Fira Code", '
         'Consolas, "Liberation Mono", monospace'
@@ -543,26 +559,31 @@ FONTS: tuple[tuple[str, str], ...] = (
 # expected to grab the wheel afterwards and make it theirs.
 # ══════════════════════════════════════════════════════════════════════════════════════
 PRESETS: dict[str, Theme] = {
-    "arc_reactor": Theme(name="Arc Reactor", seed="#22d3ee", secondary="#fbbf24", mode="dark", tint=0.55),
-    "house_party": Theme(name="House Party", seed="#fbbf24", secondary="#fb923c", mode="dark", tint=0.75, glow=0.85),
-    "veronica": Theme(name="Veronica", seed="#ef4444", secondary="#f97316", mode="midnight", tint=0.7, glow=0.8),
-    "clean_slate": Theme(name="Clean Slate", seed="#94a3b8", secondary="#7dd3fc", mode="dark", tint=0.25, glow=0.3),
-    "mark_l": Theme(name="Mark L", seed="#e11d48", secondary="#facc15", mode="dark", tint=0.6),
-    "sunset": Theme(name="Sunset", seed="#fb7185", secondary="#fdba74", mode="dark", tint=0.65),
-    "matrix": Theme(name="Matrix", seed="#4ade80", secondary="#22d3ee", mode="midnight", tint=0.5, glow=0.75),
-    "ultraviolet": Theme(name="Ultraviolet", seed="#a855f7", secondary="#22d3ee", mode="dark", tint=0.65),
-    "deep_sea": Theme(name="Deep Sea", seed="#38bdf8", secondary="#2dd4bf", mode="dark", tint=0.7),
-    "ember": Theme(name="Ember", seed="#f97316", secondary="#f43f5e", mode="midnight", tint=0.6),
-    "daylight": Theme(name="Daylight", seed="#2563eb", secondary="#0ea5e9", mode="light", tint=0.45, glow=0.25),
-    "parchment": Theme(name="Parchment", seed="#b45309", secondary="#65a30d", mode="light", tint=0.55, glow=0.2),
-    "sakura": Theme(name="Sakura", seed="#ec4899", secondary="#c4b5fd", mode="light", tint=0.5, glow=0.3),
-    "monochrome": Theme(name="Monochrome", seed="#e5e7eb", secondary="#9ca3af", mode="midnight", tint=0.0, glow=0.2),
+    # -- Quiet. Where an instrument you keep open all day should start. --------
+    "graphite": Theme(name="Graphite", seed="#8b9099", mode="dark", tint=0.10, contrast=0.55, radius=8, glow=0.10),
+    "carbon": Theme(name="Carbon", seed="#7f8489", mode="midnight", tint=0.06, contrast=0.6, radius=6, glow=0.08),
+    "paper": Theme(name="Paper", seed="#4a4f57", mode="light", tint=0.08, contrast=0.5, radius=8, glow=0.06),
+    "bone": Theme(name="Bone", seed="#8a7f6d", mode="dark", tint=0.18, contrast=0.55, radius=10, glow=0.12),
+    "arc_reactor": Theme(name="Arc Reactor", seed="#4aa8c0", mode="dark", tint=0.16, contrast=0.55, radius=8, glow=0.18),
+    "olive": Theme(name="Olive", seed="#7d8b6a", mode="dark", tint=0.14, contrast=0.55, radius=8, glow=0.12),
+    "oxide": Theme(name="Oxide", seed="#a8705a", mode="dark", tint=0.16, contrast=0.55, radius=8, glow=0.14),
+    "ink": Theme(name="Ink", seed="#6b7a99", mode="midnight", tint=0.12, contrast=0.6, radius=6, glow=0.12),
+
+    # -- Loud. Still here, still one click away, but no longer the default. ----
+    "house_party": Theme(name="House Party", seed="#fbbf24", mode="dark", tint=0.6, contrast=0.5, radius=12, glow=0.7),
+    "veronica": Theme(name="Veronica", seed="#ef4444", mode="midnight", tint=0.55, contrast=0.5, radius=10, glow=0.65),
+    "clean_slate": Theme(name="Clean Slate", seed="#94a3b8", mode="dark", tint=0.22, contrast=0.5, radius=10, glow=0.25),
+    "matrix": Theme(name="Matrix", seed="#4ade80", mode="midnight", tint=0.4, contrast=0.55, radius=6, glow=0.6),
+    "ultraviolet": Theme(name="Ultraviolet", seed="#a855f7", mode="dark", tint=0.5, contrast=0.5, radius=14, glow=0.55),
+    "sunset": Theme(name="Sunset", seed="#fb7185", mode="dark", tint=0.5, contrast=0.5, radius=14, glow=0.5),
+    "daylight": Theme(name="Daylight", seed="#2563eb", mode="light", tint=0.35, contrast=0.5, radius=10, glow=0.2),
+    "monochrome": Theme(name="Monochrome", seed="#e5e7eb", mode="midnight", tint=0.0, contrast=0.65, radius=4, glow=0.05),
 }
 
 #: The shipped terminal palette names, mapped onto their desktop equivalents, so
 #: ``/theme veronica`` means the same thing in both front ends.
 PALETTE_ALIASES: dict[str, str] = {
-    "standard": "arc_reactor",
+    "standard": "graphite",
     "house_party": "house_party",
     "veronica": "veronica",
     "clean_slate": "clean_slate",
@@ -606,10 +627,12 @@ def surprise(rng: random.Random | None = None) -> Theme:
         seed=seed,
         secondary=hsl_to_hex((hue + rng.uniform(0.08, 0.22)) % 1.0, sat * 0.9, light),
         mode=mode,
-        tint=rng.uniform(0.35, 0.85),
-        contrast=rng.uniform(0.35, 0.7),
-        radius=rng.choice([4, 8, 12, 14, 18, 22]),
-        glow=rng.uniform(0.3, 0.9),
+        # Restrained bands, matching the shipped defaults. "Surprise me" should
+        # hand back something you would actually keep, not a lava lamp.
+        tint=rng.uniform(0.06, 0.30),
+        contrast=rng.uniform(0.45, 0.68),
+        radius=rng.choice([4, 6, 8, 10, 12]),
+        glow=rng.uniform(0.05, 0.25),
     )
 
 
@@ -626,15 +649,15 @@ def load(path: Path | None = None) -> Theme:
     try:
         raw = target.read_text(encoding="utf-8")
     except (FileNotFoundError, NotADirectoryError):
-        return PRESETS["arc_reactor"]
+        return PRESETS["graphite"]
     except OSError:
         LOG.warning("Could not read %s; using the default theme", target, exc_info=True)
-        return PRESETS["arc_reactor"]
+        return PRESETS["graphite"]
     try:
         return Theme.from_dict(json.loads(raw))
     except (json.JSONDecodeError, TypeError):
         LOG.warning("%s is not valid JSON; using the default theme", target)
-        return PRESETS["arc_reactor"]
+        return PRESETS["graphite"]
 
 
 def save(theme: Theme, path: Path | None = None) -> bool:
