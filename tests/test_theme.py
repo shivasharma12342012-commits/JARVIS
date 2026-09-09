@@ -309,6 +309,37 @@ def test_saving_somewhere_unwritable_reports_failure_rather_than_raising(tmp_pat
     assert theme_mod.save(Theme(), blocker / "nested" / "theme.json") is False
 
 
+@pytest.mark.parametrize("seed", AWKWARD_SEEDS)
+@pytest.mark.parametrize("mode", theme_mod.MODES)
+def test_text_is_readable_on_the_panels_it_is_painted_on(seed, mode):
+    """The bug this guards: text tuned against the page, painted on a panel.
+
+    Almost nothing in the desktop app sits directly on ``--bg`` — section
+    headings, the status bar, session rows, tab labels and gauge captions all
+    sit on a surface a step or two up, and those surfaces move *away* from the
+    ground in opposite directions in the two modes. Deriving against ``--bg``
+    alone put half the light-theme furniture under 3:1.
+    """
+    built = Theme(seed=seed, mode=mode)
+    tokens = built.css_variables()
+    for step in range(0, 5):
+        ground = built._surface(step) if step else tokens["--bg"]
+        assert theme_mod.contrast(tokens["--text"], ground) >= CONTRAST_TARGET, (step, "text")
+        for name in ("--text-dim", "--text-faint", "--accent-text", "--secondary-text",
+                     "--ok", "--warn", "--danger"):
+            assert theme_mod.contrast(tokens[name], ground) >= CONTRAST_TARGET_SOFT, (step, name)
+
+
+def test_every_preset_is_readable_on_its_panels():
+    for key, preset in theme_mod.PRESETS.items():
+        tokens = preset.css_variables()
+        for step in range(0, 5):
+            ground = preset._surface(step) if step else tokens["--bg"]
+            for name in ("--text", "--text-dim", "--text-faint", "--accent-text"):
+                ratio = theme_mod.contrast(tokens[name], ground)
+                assert ratio >= CONTRAST_TARGET_SOFT, (key, step, name, round(ratio, 2))
+
+
 def test_the_shipped_default_is_quiet():
     """Grey, near-monochrome, and no visible bloom. Restraint by default."""
     default = theme_mod.PRESETS["graphite"]

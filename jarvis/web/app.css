@@ -222,6 +222,18 @@ kbd, .hint {
    transition on the tracks makes the drag feel like it is on elastic. */
 .shell.animate { transition: grid-template-columns var(--normal) var(--ease); }
 
+/* Every pane names its own column. Without this, the moment a responsive rule
+   makes the sidebar or the rail `position: fixed` it leaves the grid's flow,
+   auto-placement shifts every sibling one column left, and the conversation
+   lands in a zero-width track — the whole middle of the application vanishes
+   below 1180px. Explicit placement is immune to that. */
+.sidebar      { grid-column: 1; }
+#seam-left    { grid-column: 2; }
+.conversation { grid-column: 3; }
+#seam-right   { grid-column: 4; }
+.rail         { grid-column: 5; }
+.edge         { grid-column: 6; }
+
 /* ── seams ────────────────────────────────────────────────────────────────
    One pixel to look at, a wider invisible area to hit. */
 .seam { position: relative; background: var(--line); cursor: col-resize;
@@ -334,7 +346,11 @@ kbd, .hint {
 .transcript {
   flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden;
   padding: 22px clamp(16px, 4vw, 56px) 4px;
-  scroll-behavior: smooth; overscroll-behavior: contain;
+  /* Deliberately not `scroll-behavior: smooth`. Following a stream calls this
+     once per token; animating each of those piles up overlapping tweens and
+     makes scrolling away feel like it is being fought. The one place a glide
+     belongs is the Jump button, which asks for it explicitly. */
+  overscroll-behavior: contain;
   display: flex; flex-direction: column; gap: 12px;
 }
 
@@ -651,15 +667,18 @@ kbd, .hint {
   position: sticky; left: 0; z-index: 1; width: 1%;
   padding: 0 10px 0 12px; text-align: right;
   font-family: var(--font-mono); font-size: 10.5px; line-height: 1.62;
-  color: var(--text-faint); opacity: .4; background: var(--bg-deep);
+  color: var(--text-faint); background: var(--bg-deep);
   user-select: none;                /* copy the code, not the numbers */
   border-right: 1px solid var(--line);
 }
+/* Generated content is never part of a selection, which is what actually
+   guarantees a copied block comes back without line numbers in it. */
+.code-table .ln::before { content: attr(data-line); }
 .code-table .src {
   padding: 0 16px 0 12px; white-space: pre;
   font-family: var(--font-mono); font-size: 11.5px; line-height: 1.62; color: var(--text);
 }
-.code-table tr:hover .ln { opacity: .9; }
+.code-table tr:hover .ln { color: var(--text-dim); }
 .code-table tr:hover .src { background: var(--surface); }
 .code-host.wrapped .code-table { width: 100%; }
 .code-host.wrapped .code-table .src { white-space: break-spaces; overflow-wrap: anywhere; }
@@ -733,14 +752,16 @@ kbd, .hint {
   gap: 8px; padding: 1px 12px; align-items: baseline;
 }
 .log-line:hover { background: var(--surface); }
-.log-line .at { color: var(--text-faint); opacity: .6; }
+.log-line .at { color: var(--text-faint); }
 .log-line .lv { font-weight: 600; letter-spacing: .04em; font-size: 9.5px; text-transform: uppercase; }
-.log-line .msg { color: var(--text-dim); white-space: pre-wrap; overflow-wrap: anywhere; }
+/* Scoped, not `.msg`: that name belongs to a transcript row, and a second
+   meaning for it is how `.tool` and `.shell` each caused a real bug. */
+.log-line .log-msg { color: var(--text-dim); white-space: pre-wrap; overflow-wrap: anywhere; }
 .log-line[data-level="info"]    .lv { color: var(--text-faint); }
 .log-line[data-level="success"] .lv { color: var(--ok); }
 .log-line[data-level="warn"]    .lv { color: var(--warn); }
 .log-line[data-level="error"]   .lv { color: var(--danger); }
-.log-line[data-level="error"]   .msg { color: var(--danger); }
+.log-line[data-level="error"]   .log-msg { color: var(--danger); }
 .log-line[data-level="tool"]    .lv { color: var(--secondary-text); }
 
 /* ── system panel ─────────────────────────────────────────────────────────── */

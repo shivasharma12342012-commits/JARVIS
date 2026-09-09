@@ -358,17 +358,32 @@ class Theme:
 
         accent = self.seed
         secondary = self.secondary
-        # Text colours: strong enough to read, hue intact.
+
+        # Text is derived against the *furthest* surface, not against the page.
+        #
+        # Almost nothing in this interface sits directly on --bg: section
+        # headings, the status bar, session rows and tab labels sit on a surface
+        # a step or two up, and the command palette, the slash menu and the
+        # toasts sit on the highest one of all. Those surfaces move *away* from
+        # the ground in opposite directions in the two modes — lighter on a dark
+        # ground, darker on a light one — so a tone tuned against --bg is
+        # systematically weaker everywhere it is actually painted.
+        #
+        # Deriving against the top of the ramp guarantees the floor holds on
+        # every surface below it too. It costs a little contrast on the rare
+        # element that does sit on the ground, which is free: over-contrast is
+        # not a defect, under-contrast is.
+        panel = self._surface(4)
         text = readable(mix(ink_for(bg), accent, 0.06), bg, 12.0)
-        text_dim = readable(mix(text, bg, 0.38), bg, 5.5)
-        text_faint = readable(mix(text, bg, 0.62), bg, CONTRAST_TARGET_SOFT)
+        text_dim = readable(mix(text, bg, 0.38), panel, 5.0)
+        text_faint = readable(mix(text, bg, 0.62), panel, CONTRAST_TARGET_SOFT + 0.4)
 
         # Status hues are pulled towards the seed just enough to belong to the
         # same family, then made readable independently — a warning must stay
         # legible even when the operator's chosen colour is also yellow.
-        ok = readable(mix("#2fbf71", accent, 0.16), bg, CONTRAST_TARGET_SOFT)
-        warn = readable(mix("#f5a524", accent, 0.12), bg, CONTRAST_TARGET_SOFT)
-        danger = readable(mix("#f0525b", accent, 0.10), bg, CONTRAST_TARGET_SOFT)
+        ok = readable(mix("#2fbf71", accent, 0.16), panel, CONTRAST_TARGET_SOFT)
+        warn = readable(mix("#f5a524", accent, 0.12), panel, CONTRAST_TARGET_SOFT)
+        danger = readable(mix("#f0525b", accent, 0.10), panel, CONTRAST_TARGET_SOFT)
 
         tokens: dict[str, str] = {
             "--bg": bg,
@@ -383,7 +398,10 @@ class Theme:
             "--text-dim": text_dim,
             "--text-faint": text_faint,
             "--accent": accent,
-            "--accent-text": readable(accent, bg, CONTRAST_TARGET),
+            # Against the panel too: the accent names tabs, breadcrumb leaves,
+            # the shell prompt and the selected session, none of which sit on
+            # the page ground.
+            "--accent-text": readable(accent, panel, CONTRAST_TARGET),
             "--accent-strong": saturate(lighten(accent, 0.12) if self.dark else darken(accent, 0.10), 0.06),
             "--accent-muted": mix(accent, bg, 0.55),
             "--accent-soft": mix(accent, bg, 0.82),
@@ -393,7 +411,7 @@ class Theme:
             "--accent-glow": with_alpha(accent, 0.18 + 0.42 * self.glow),
             "--on-accent": ink_for(accent),
             "--secondary": secondary,
-            "--secondary-text": readable(secondary, bg, CONTRAST_TARGET),
+            "--secondary-text": readable(secondary, panel, CONTRAST_TARGET),
             "--secondary-soft": mix(secondary, bg, 0.84),
             "--ok": ok,
             "--warn": warn,

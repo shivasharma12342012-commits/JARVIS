@@ -897,14 +897,21 @@ pip install pytest pytest-asyncio
 pytest -q
 ```
 
-Two hundred and forty-seven tests, no Ollama daemon, no microphone, no
-browser, well under two minutes. The model is a scripted fake and the HUD is driven
+Two hundred and eighty-nine tests, no Ollama daemon and no microphone, well
+under two minutes. Most need no browser either; the handful in
+`tests/test_ui.py` drive the real front end through Playwright and skip
+themselves cleanly when it is not installed. The model is a scripted fake and the HUD is driven
 through Textual's pilot, so the suite covers streaming, tool parallelism,
 cancellation, the transcript, the modal dialogs and the whole boot sequence.
 
 The desktop app is driven over its own HTTP API with `urllib`, exactly as the
 front end drives it, so a passing suite means the front end has something real
-to talk to. That includes the security properties — no token, wrong token,
+to talk to. `tests/test_ui.py` goes one further and drives the rendered
+interface itself: it asserts that the conversation never collapses at any of
+eight widths, that nothing spills out of the window, that a closed pane stays
+closed across a reload, and that copying a block of code does not bring the
+line numbers with it. Every one of those guards a bug that was found by looking
+at the interface rather than by reading it. That includes the security properties — no token, wrong token,
 a forged `Host`, a cross-origin request and `../` in a static path are each
 asserted to be refused, and so are the workspace escapes the code section could
 otherwise become — `../`, absolute paths, nested traversal and out-of-tree
