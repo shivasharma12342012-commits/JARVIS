@@ -1,0 +1,832 @@
+/* ══════════════════════════════════════════════════════════════════════════════
+   The Code surface
+
+   The conversation is deliberately quiet — grey, flat, restrained, because you
+   read it for hours. This is the other half of that argument. An editor is
+   where you look when you are making something, and it is allowed to be
+   beautiful about it: real glass with a real refractive edge, a sky that drifts
+   behind the panels, light that follows the pointer, and colour that actually
+   commits.
+
+   Every colour here is still derived from the operator's one seed through
+   `color-mix`, so choosing a colour re-tunes this surface exactly the way it
+   re-tunes the conversation. There is not one literal hue in the file that is
+   not blended into their accent first.
+
+   Everything that moves is listed at the bottom under one reduced-motion
+   query, and all of it stops there.
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+/* An <svg> with no dimensions is 300×150 by default, and this one holds nothing
+   but filter definitions, so left in flow it opens a dead band across the top of
+   the window and pushes the whole application down. It is taken out of flow and
+   given no size at all. */
+.filter-defs { position: absolute; width: 0; height: 0; overflow: hidden; pointer-events: none; }
+
+/* ── the derived palette ──────────────────────────────────────────────────────
+   Six anchors, each mixed into the operator's accent. The anchors are there so
+   a string never reads as a keyword; the mix is there so a purple theme gets
+   purple-leaning strings rather than the same green every editor ships. */
+.ide, #quick-wrap {
+  --ink-key:   color-mix(in srgb, var(--accent-strong) 74%, #c8b4ff 26%);
+  --ink-str:   color-mix(in srgb, var(--accent) 26%, #5fd3a0 74%);
+  --ink-num:   color-mix(in srgb, var(--accent) 22%, #f0a868 78%);
+  --ink-fn:    color-mix(in srgb, var(--accent) 30%, #63c2f5 70%);
+  --ink-type:  color-mix(in srgb, var(--accent) 26%, #f2d16b 74%);
+  --ink-const: color-mix(in srgb, var(--accent) 30%, #f78da7 70%);
+  --ink-op:    color-mix(in srgb, var(--text-dim) 70%, var(--accent) 30%);
+  --ink-com:   var(--text-faint);
+  --ink-var:   color-mix(in srgb, var(--accent) 40%, #9ad5ff 60%);
+  --ink-tag:   color-mix(in srgb, var(--accent) 24%, #f78da7 76%);
+  --ink-attr:  color-mix(in srgb, var(--accent) 26%, #f2d16b 74%);
+
+  /* Glass. Three edges, not one: a bright top lip, a dark bottom lip and a
+     faint side, which is what separates a pane of glass from a rounded div. */
+  --glass-fill:  color-mix(in srgb, var(--elevated) 62%, transparent);
+  --glass-fill-2: color-mix(in srgb, var(--surface) 70%, transparent);
+  --glass-edge:  color-mix(in srgb, var(--line-strong) 70%, transparent);
+  --glass-top:   color-mix(in srgb, #ffffff 16%, transparent);
+  --glass-under: color-mix(in srgb, #000000 26%, transparent);
+  --glass-spec:  color-mix(in srgb, var(--accent) 34%, #ffffff 66%);
+
+  --ed-line-h: 21px;
+  --ed-font-size: 13px;
+  --ed-pad: 14px;
+  --gutter-w: 62px;
+  --side-w: 262px;
+  --mission-w: 300px;
+  --dock-h: 224px;
+  --abar-w: 48px;
+  --spring: cubic-bezier(.22, .92, .26, 1.04);
+}
+html[data-mode="light"] .ide, html[data-mode="light"] #quick-wrap {
+  --glass-fill:  color-mix(in srgb, #ffffff 74%, var(--surface) 26%);
+  --glass-fill-2: color-mix(in srgb, #ffffff 62%, var(--surface-2) 38%);
+  --glass-top:   color-mix(in srgb, #ffffff 78%, transparent);
+  --glass-under: color-mix(in srgb, #000000 10%, transparent);
+  --ink-key:   color-mix(in srgb, var(--accent-strong) 66%, #6b3fd4 34%);
+  --ink-str:   color-mix(in srgb, var(--accent) 20%, #157a52 80%);
+  --ink-num:   color-mix(in srgb, var(--accent) 18%, #b35a12 82%);
+  --ink-fn:    color-mix(in srgb, var(--accent) 24%, #0b6ea8 76%);
+  --ink-type:  color-mix(in srgb, var(--accent) 20%, #8a6a05 80%);
+  --ink-const: color-mix(in srgb, var(--accent) 24%, #b5326a 76%);
+  --ink-var:   color-mix(in srgb, var(--accent) 34%, #1667a8 66%);
+  --ink-tag:   color-mix(in srgb, var(--accent) 20%, #b5326a 80%);
+  --ink-attr:  color-mix(in srgb, var(--accent) 20%, #8a6a05 80%);
+}
+
+/* ── which surface is showing ─────────────────────────────────────────────── */
+body[data-surface="code"] .shell,
+body[data-surface="code"] > .statusbar { display: none; }
+body[data-surface="chat"] .ide { display: none; }
+
+.ide[hidden] { display: none !important; }
+.ide {
+  position: relative; z-index: 10; flex: 1; min-height: 0;
+  display: grid;
+  grid-template-columns:
+    var(--abar-w) var(--side-w) 4px minmax(220px, 1fr) 4px var(--mission-w);
+  grid-template-rows: minmax(0, 1fr) 24px;
+  /* Never flat. A vertical fall from the page ground to the deep ground gives
+     the glass something to sit against; without it every pane floats on the
+     same value it is made of. */
+  background:
+    radial-gradient(120% 90% at 50% -10%, color-mix(in srgb, var(--surface) 55%, transparent), transparent 62%),
+    linear-gradient(180deg, var(--bg) 0%, var(--bg-deep) 100%);
+  isolation: isolate;
+}
+.ide.no-side    { grid-template-columns: var(--abar-w) 0 0 minmax(220px, 1fr) 4px var(--mission-w); }
+.ide.no-mission { grid-template-columns: var(--abar-w) var(--side-w) 4px minmax(220px, 1fr) 0 0; }
+.ide.no-side.no-mission { grid-template-columns: var(--abar-w) 0 0 minmax(220px, 1fr) 0 0; }
+.ide.animate { transition: grid-template-columns .34s var(--spring); }
+
+/* Explicit placement, for the same reason the conversation needs it: the moment
+   a responsive rule takes a pane out of flow, auto-placement slides every
+   sibling one track left and the editor lands in a zero-width column. */
+.abar        { grid-column: 1; grid-row: 1; }
+.side        { grid-column: 2; grid-row: 1; }
+#ide-seam-l  { grid-column: 3; grid-row: 1; }
+.stage       { grid-column: 4; grid-row: 1; }
+#ide-seam-r  { grid-column: 5; grid-row: 1; }
+.mission     { grid-column: 6; grid-row: 1; }
+.ide-status  { grid-column: 1 / -1; grid-row: 2; }
+.ide.no-side #ide-seam-l, .ide.no-mission #ide-seam-r { display: none; }
+
+/* ── the sky ──────────────────────────────────────────────────────────────────
+   Three washes on long, mutually prime periods, so the field never visibly
+   repeats. They sit under everything and are what the glass refracts. */
+.aurora { position: absolute; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; }
+.aurora i {
+  position: absolute; display: block; border-radius: 50%;
+  filter: blur(90px);
+  /* A floor, not just a multiple of the glow. A grey theme still wants the
+     light in the room; what it does not want is a hue it did not ask for, and
+     these washes are the operator's own accent, whatever that is. */
+  opacity: calc(.34 + .50 * var(--glow-strength, .1));
+}
+.aurora .a1 {
+  width: 58vw; height: 58vw; left: -14vw; top: -22vw;
+  background: radial-gradient(circle, var(--accent) 0%, transparent 66%);
+  animation: drift-a 47s ease-in-out infinite;
+}
+.aurora .a2 {
+  width: 52vw; height: 52vw; right: -16vw; top: 18vh;
+  background: radial-gradient(circle, var(--secondary) 0%, transparent 66%);
+  animation: drift-b 61s ease-in-out infinite;
+}
+.aurora .a3 {
+  width: 44vw; height: 44vw; left: 32vw; bottom: -24vw;
+  background: radial-gradient(circle, color-mix(in srgb, var(--accent) 50%, var(--ok)) 0%, transparent 68%);
+  animation: drift-c 83s ease-in-out infinite;
+}
+
+/* ── glass ────────────────────────────────────────────────────────────────────
+   A pane is four things stacked: a translucent fill, a blur of what is behind
+   it, three lit edges, and a specular highlight that tracks the pointer. Take
+   away any one and it reads as a coloured rectangle. */
+.glass {
+  position: relative;
+  background:
+    linear-gradient(180deg, var(--glass-fill) 0%, var(--glass-fill-2) 100%);
+  backdrop-filter: blur(24px) saturate(1.6);
+  -webkit-backdrop-filter: blur(24px) saturate(1.6);
+  border: 1px solid var(--glass-edge);
+  box-shadow:
+    inset 0 1px 0 var(--glass-top),
+    inset 0 -1px 0 var(--glass-under),
+    0 22px 48px -28px var(--shadow);
+}
+/* The specular. `--gx`/`--gy` are written by the pointer handler; with no
+   pointer they sit off-panel and this contributes nothing. */
+.glass::before {
+  content: ""; position: absolute; inset: 0; z-index: 0; pointer-events: none;
+  border-radius: inherit;
+  background: radial-gradient(
+    320px circle at var(--gx, -400px) var(--gy, -400px),
+    color-mix(in srgb, var(--glass-spec) 16%, transparent) 0%,
+    transparent 62%);
+  opacity: 0; transition: opacity .4s var(--ease);
+}
+.glass:hover::before { opacity: 1; }
+/* The refractive lip: one bright hairline that catches at the top corners, the
+   way the edge of real glass does. */
+.glass::after {
+  content: ""; position: absolute; inset: 0; z-index: 0; pointer-events: none;
+  border-radius: inherit;
+  background: linear-gradient(105deg,
+    color-mix(in srgb, #ffffff 12%, transparent) 0%,
+    transparent 18%, transparent 82%,
+    color-mix(in srgb, #ffffff 7%, transparent) 100%);
+  mix-blend-mode: screen;
+}
+html[data-mode="light"] .glass::after { mix-blend-mode: multiply; opacity: .5; }
+.glass > * { position: relative; z-index: 1; }
+
+/* ── activity bar ─────────────────────────────────────────────────────────── */
+.abar {
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  padding: 10px 0; z-index: 3;
+  background: color-mix(in srgb, var(--bg-deep) 82%, transparent);
+  backdrop-filter: blur(18px);
+  border-right: 1px solid var(--glass-edge);
+}
+.abar .spacer { flex: 1; }
+.abtn {
+  position: relative; width: 34px; height: 34px; border: 0; border-radius: 10px;
+  background: transparent; color: var(--text-faint); cursor: pointer;
+  display: grid; place-items: center;
+  transition: color .2s var(--ease), background .2s var(--ease), transform .24s var(--spring);
+}
+.abtn svg { width: 18px; height: 18px; fill: none; stroke: currentColor;
+            stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.abtn:hover { color: var(--text); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.abtn:active { transform: scale(.92); }
+.abtn.on { color: var(--accent-text); background: color-mix(in srgb, var(--accent) 16%, transparent); }
+/* The selected marker is a lit bar on the inner edge, and it slides rather than
+   jumping because it is the same element for every button. */
+.abtn.on::before {
+  content: ""; position: absolute; left: -7px; top: 6px; bottom: 6px; width: 2px;
+  border-radius: 2px; background: var(--accent);
+  box-shadow: 0 0 10px var(--accent-glow);
+  animation: mark-in .3s var(--spring);
+}
+.abadge {
+  position: absolute; right: 1px; top: 1px; min-width: 14px; height: 14px;
+  padding: 0 3px; border-radius: 7px; font: 600 9px/14px var(--font-ui);
+  background: var(--danger); color: var(--on-accent); text-align: center;
+}
+
+/* ── side panel ───────────────────────────────────────────────────────────── */
+.side, .mission {
+  display: flex; flex-direction: column; min-width: 0; min-height: 0;
+  border-radius: 0; border-top: 0; border-bottom: 0; z-index: 2;
+}
+.side { border-left: 0; }
+.mission { border-right: 0; }
+.side-head {
+  flex: none; height: 34px; display: flex; align-items: center; gap: 6px;
+  padding: 0 6px 0 12px; border-bottom: 1px solid var(--glass-edge);
+}
+.side-head .micro { color: var(--text-dim); letter-spacing: .1em; }
+.side-body, .mission-body {
+  flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column;
+}
+.spanel { display: none; flex-direction: column; min-height: 0; flex: 1; }
+.spanel.on { display: flex; animation: panel-in .3s var(--spring); }
+.side-sub { padding: 12px 12px 5px; color: var(--text-faint); }
+.side-note { margin: 0; padding: 10px 12px; font-size: 11px; color: var(--text-faint); }
+.side-field { display: flex; align-items: center; gap: 4px; padding: 8px 8px 4px; }
+.side-field input {
+  flex: 1; min-width: 0; height: 27px; padding: 0 9px;
+  border: 1px solid var(--line); border-radius: 7px;
+  background: color-mix(in srgb, var(--bg) 60%, transparent);
+  color: var(--text); font: 400 12px var(--font-ui); outline: none;
+  transition: border-color .2s var(--ease), box-shadow .2s var(--ease);
+}
+.side-field input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.ghost-btn {
+  width: 24px; height: 24px; border: 0; border-radius: 6px; background: transparent;
+  color: var(--text-faint); cursor: pointer; display: grid; place-items: center;
+  transition: color .18s var(--ease), background .18s var(--ease);
+}
+.ghost-btn svg { width: 14px; height: 14px; fill: none; stroke: currentColor;
+                 stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.ghost-btn:hover { color: var(--text); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.ghost-btn.tiny { width: 22px; height: 22px; font: 600 10px var(--font-ui); }
+.ghost-btn.on { color: var(--accent-text); background: color-mix(in srgb, var(--accent) 20%, transparent); }
+
+/* ── the tree ─────────────────────────────────────────────────────────────── */
+.etree { padding: 4px 0 14px; }
+.erow {
+  display: flex; align-items: center; gap: 6px; width: 100%;
+  padding: 3px 10px 3px 0; border: 0; background: transparent; cursor: pointer;
+  color: var(--text-dim); font: 400 12px/18px var(--font-ui); text-align: left;
+  position: relative;
+  animation: row-in .26s var(--spring) both;
+  animation-delay: calc(var(--i, 0) * 9ms);
+}
+.erow:hover { color: var(--text); background: color-mix(in srgb, var(--accent) 9%, transparent); }
+.erow.on {
+  color: var(--accent-text); background: color-mix(in srgb, var(--accent) 15%, transparent);
+}
+.erow.on::before {
+  content: ""; position: absolute; left: 0; top: 2px; bottom: 2px; width: 2px;
+  background: var(--accent);
+}
+.erow .tw { width: 12px; flex: none; color: var(--text-faint); font-size: 9px;
+            transition: transform .22s var(--spring); }
+.erow.open .tw { transform: rotate(90deg); }
+.erow svg { width: 13px; height: 13px; flex: none; fill: none; stroke: currentColor;
+            stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; opacity: .8; }
+.erow .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.erow .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--warn);
+             margin-left: auto; flex: none; }
+/* A file the agent wrote to gets a single sweep of light and then stops. */
+.erow.touched::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(100deg, transparent 0%,
+              color-mix(in srgb, var(--accent) 30%, transparent) 50%, transparent 100%);
+  animation: beam 1.1s var(--ease) 1;
+}
+
+/* ── search hits, outline, problems ───────────────────────────────────────── */
+.hits, .outline, .problems { padding-bottom: 16px; }
+.hit-file {
+  display: flex; align-items: center; gap: 6px; width: 100%; padding: 5px 10px;
+  border: 0; background: transparent; cursor: pointer; text-align: left;
+  color: var(--text); font: 600 11px var(--font-ui);
+}
+.hit-file:hover { background: color-mix(in srgb, var(--accent) 9%, transparent); }
+.hit-file .cnt { margin-left: auto; color: var(--text-faint); font-weight: 400; }
+.hit {
+  display: block; width: 100%; padding: 2px 10px 2px 22px; border: 0; cursor: pointer;
+  background: transparent; text-align: left; color: var(--text-dim);
+  font: 400 11px/16px var(--font-mono); white-space: pre; overflow: hidden;
+  text-overflow: ellipsis;
+}
+.hit:hover { background: color-mix(in srgb, var(--accent) 9%, transparent); color: var(--text); }
+.hit b { color: var(--accent-text); font-weight: 600;
+         background: color-mix(in srgb, var(--accent) 22%, transparent); border-radius: 2px; }
+.hit .ln { color: var(--text-faint); margin-right: 8px; }
+
+.sym {
+  display: flex; align-items: center; gap: 7px; width: 100%; border: 0; cursor: pointer;
+  background: transparent; text-align: left; color: var(--text-dim);
+  padding: 3px 10px; font: 400 12px/18px var(--font-ui);
+  padding-left: calc(10px + var(--d, 0) * 10px);
+  animation: row-in .24s var(--spring) both;
+  animation-delay: calc(var(--i, 0) * 8ms);
+}
+.sym:hover { background: color-mix(in srgb, var(--accent) 9%, transparent); color: var(--text); }
+.sym .kind {
+  width: 15px; height: 15px; flex: none; border-radius: 4px; font: 700 8px/15px var(--font-ui);
+  text-align: center; color: var(--on-accent);
+  background: color-mix(in srgb, var(--accent) 70%, var(--text-faint));
+}
+.sym[data-kind="class"] .kind, .sym[data-kind="struct"] .kind, .sym[data-kind="type"] .kind
+  { background: var(--ink-type); color: var(--bg); }
+.sym[data-kind="function"] .kind { background: var(--ink-fn); color: var(--bg); }
+.sym[data-kind="heading"] .kind, .sym[data-kind="section"] .kind { background: var(--ink-const); color: var(--bg); }
+.sym .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sym .at { margin-left: auto; color: var(--text-faint); font: 400 10px var(--font-mono); }
+
+.prob {
+  display: flex; align-items: flex-start; gap: 7px; width: 100%; border: 0; cursor: pointer;
+  background: transparent; text-align: left; padding: 5px 10px;
+  color: var(--text-dim); font: 400 11px/16px var(--font-ui);
+  animation: row-in .24s var(--spring) both; animation-delay: calc(var(--i, 0) * 7ms);
+}
+.prob:hover { background: color-mix(in srgb, var(--accent) 9%, transparent); color: var(--text); }
+.prob .sev { width: 6px; height: 6px; border-radius: 50%; flex: none; margin-top: 5px; }
+.prob[data-level="error"] .sev { background: var(--danger); }
+.prob[data-level="warn"]  .sev { background: var(--warn); }
+.prob[data-level="info"]  .sev { background: var(--ink-fn); }
+.prob[data-level="hint"]  .sev { background: var(--text-faint); }
+/* The message takes the room that is left and wraps inside it. Without the
+   `min-width: 0` a long line pushes the line number off the panel instead. */
+.prob .ptxt { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.prob .at { margin-left: auto; flex: none; padding-left: 8px;
+            color: var(--text-faint); font: 400 10px var(--font-mono); }
+
+/* Structural only: a tree row and the rows nested under it. The indentation is
+   on the row itself, so these carry no style of their own beyond being blocks. */
+.ebranch, .ekids { display: block; }
+
+/* ── mission panel ────────────────────────────────────────────────────────── */
+.acts { display: flex; flex-wrap: wrap; gap: 5px; padding: 0 10px 6px; }
+.act {
+  border: 1px solid var(--line); border-radius: 14px; padding: 4px 10px;
+  background: color-mix(in srgb, var(--surface-2) 60%, transparent);
+  color: var(--text-dim); font: 500 11px var(--font-ui); cursor: pointer;
+  transition: all .2s var(--spring);
+}
+.act:hover {
+  color: var(--accent-text); border-color: var(--accent-line); transform: translateY(-1px);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  box-shadow: 0 6px 16px -10px var(--accent-glow);
+}
+.act:active { transform: translateY(0) scale(.97); }
+
+.mission-state {
+  display: flex; align-items: center; gap: 7px; margin: 10px 12px;
+  padding: 7px 10px; border-radius: 10px;
+  border: 1px solid var(--glass-edge);
+  background: color-mix(in srgb, var(--surface) 50%, transparent);
+  font: 500 11px var(--font-ui); color: var(--text-dim);
+}
+.ms-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); flex: none; }
+body[data-state="thinking"] .ms-dot, body[data-state="working"] .ms-dot {
+  background: var(--warn); animation: breathe 1.5s ease-in-out infinite;
+}
+.pulse { width: 6px; height: 6px; border-radius: 50%; background: var(--text-faint); }
+body[data-state="thinking"] .pulse, body[data-state="working"] .pulse {
+  background: var(--accent); box-shadow: 0 0 0 0 var(--accent-glow);
+  animation: ping 1.8s var(--ease) infinite;
+}
+
+.mission-ask { padding: 0 12px 6px; }
+.mission-ask textarea {
+  width: 100%; resize: vertical; min-height: 58px; max-height: 200px;
+  padding: 8px 10px; border: 1px solid var(--line); border-radius: 9px;
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+  color: var(--text); font: 400 12px/1.5 var(--font-ui); outline: none;
+  transition: border-color .2s var(--ease), box-shadow .2s var(--ease);
+}
+.mission-ask textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.mission-row { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
+
+.feed { padding: 0 12px 16px; display: flex; flex-direction: column; gap: 5px; }
+.fitem {
+  display: flex; gap: 7px; font: 400 11px/1.45 var(--font-ui); color: var(--text-dim);
+  animation: row-in .3s var(--spring) both;
+}
+.fitem .fdot { width: 5px; height: 5px; border-radius: 50%; flex: none; margin-top: 5px;
+               background: var(--accent); }
+.fitem[data-kind="tool"] .fdot { background: var(--ink-fn); }
+.fitem[data-kind="warn"] .fdot { background: var(--warn); }
+.fitem[data-kind="error"] .fdot { background: var(--danger); }
+.fitem .ftxt { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+/* ── seams ────────────────────────────────────────────────────────────────── */
+.ide-seam {
+  background: transparent; cursor: col-resize; position: relative; z-index: 4;
+}
+.ide-seam::before {
+  content: ""; position: absolute; inset: 0; margin: 0 auto; width: 1px;
+  background: var(--glass-edge); transition: background .2s var(--ease);
+}
+.ide-seam::after { content: ""; position: absolute; inset: 0 -4px; }
+.ide-seam:hover::before, .ide-seam.active::before {
+  background: var(--accent); box-shadow: 0 0 12px var(--accent-glow);
+}
+.dock-seam { height: 4px; cursor: row-resize; position: relative; flex: none; }
+.dock-seam::before {
+  content: ""; position: absolute; inset: 0; margin: auto 0; height: 1px;
+  background: var(--glass-edge); transition: background .2s var(--ease);
+}
+.dock-seam::after { content: ""; position: absolute; inset: -4px 0; }
+.dock-seam:hover::before, .dock-seam.active::before {
+  background: var(--accent); box-shadow: 0 0 12px var(--accent-glow);
+}
+
+/* ── the stage ────────────────────────────────────────────────────────────── */
+.stage { display: flex; flex-direction: column; min-width: 0; min-height: 0; z-index: 1; }
+.stage-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+
+/* Tabs. Each opens with a small settle rather than appearing, which is the
+   difference between a list that changed and a thing you just did. */
+.etabs {
+  flex: none; height: 35px; display: flex; align-items: stretch; overflow-x: auto;
+  overflow-y: hidden; scrollbar-width: none;
+  background: color-mix(in srgb, var(--bg-deep) 70%, transparent);
+  border-bottom: 1px solid var(--glass-edge);
+}
+.etabs::-webkit-scrollbar { height: 0; }
+.etab {
+  position: relative; display: flex; align-items: center; gap: 7px;
+  padding: 0 9px 0 13px; border: 0; border-right: 1px solid var(--glass-edge);
+  background: transparent; color: var(--text-faint); cursor: pointer;
+  font: 400 12px var(--font-ui); white-space: nowrap; max-width: 220px;
+  animation: tab-in .28s var(--spring) both;
+  transition: color .18s var(--ease), background .18s var(--ease);
+}
+.etab:hover { color: var(--text-dim); background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.etab.on {
+  color: var(--text); background: color-mix(in srgb, var(--surface) 62%, transparent);
+}
+.etab.on::after {
+  content: ""; position: absolute; left: 0; right: 0; top: 0; height: 2px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  box-shadow: 0 0 12px var(--accent-glow);
+  animation: mark-in .32s var(--spring);
+}
+.etab .tname { overflow: hidden; text-overflow: ellipsis; }
+.etab .tx {
+  width: 16px; height: 16px; border-radius: 4px; display: grid; place-items: center;
+  font-size: 13px; line-height: 1; color: var(--text-faint); flex: none;
+  transition: background .16s var(--ease), color .16s var(--ease);
+}
+.etab .tx:hover { background: color-mix(in srgb, var(--danger) 24%, transparent); color: var(--text); }
+.etab .tdot { width: 7px; height: 7px; border-radius: 50%; background: var(--warn); flex: none; }
+.etab.dirty .tx { display: none; }
+.etab.dirty:hover .tx { display: grid; }
+.etab.dirty:hover .tdot { display: none; }
+
+.ebread {
+  flex: none; height: 24px; display: flex; align-items: center; gap: 2px;
+  padding: 0 14px; overflow: hidden; white-space: nowrap;
+  border-bottom: 1px solid var(--glass-edge);
+  background: color-mix(in srgb, var(--bg-deep) 45%, transparent);
+  font: 400 10.5px var(--font-ui); color: var(--text-faint);
+}
+.ebread .crumb { cursor: default; }
+.ebread .crumb.leaf { color: var(--text-dim); }
+.ebread .csep { opacity: .45; padding: 0 2px; }
+
+/* ── the editor itself ────────────────────────────────────────────────────── */
+.editor { position: relative; flex: 1; min-height: 0; display: flex; }
+.ed-empty {
+  position: absolute; inset: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 14px; text-align: center;
+  color: var(--text-faint); padding: 24px;
+}
+.ed-empty[hidden] { display: none; }
+.ed-empty-mark {
+  width: 62px; height: 62px; border-radius: 20px; display: grid; place-items: center;
+  border: 1px solid var(--glass-edge);
+  background: color-mix(in srgb, var(--surface) 45%, transparent);
+  animation: float 7s ease-in-out infinite;
+}
+.ed-empty-mark svg { width: 26px; height: 26px; fill: none; stroke: var(--accent);
+                     stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.ed-empty h2 { margin: 0; font: 400 15px var(--font-display); color: var(--text-dim);
+               letter-spacing: .02em; }
+.ed-empty-keys { list-style: none; margin: 0; padding: 0; display: grid; gap: 7px; }
+.ed-empty-keys li { display: flex; align-items: center; gap: 5px; font-size: 11px; }
+.ed-empty-keys span { margin-left: 6px; }
+
+.ed { position: absolute; inset: 0; display: flex; min-height: 0; }
+.ed[hidden] { display: none !important; }
+
+.ed-gutter {
+  flex: none; width: var(--gutter-w); overflow: hidden; position: relative;
+  background: color-mix(in srgb, var(--bg-deep) 40%, transparent);
+  border-right: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
+}
+.gin { position: absolute; top: 0; left: 0; right: 0; padding: var(--ed-pad) 0; will-change: transform; }
+.gln {
+  height: var(--ed-line-h); padding-right: 13px; text-align: right;
+  font: 400 var(--ed-font-size)/var(--ed-line-h) var(--font-mono);
+  color: color-mix(in srgb, var(--text-faint) 72%, transparent);
+  position: relative;
+  transition: color .18s var(--ease);
+}
+.gln.on { color: var(--accent-text); font-weight: 600; }
+/* The change bar: what you have altered since the file was last saved, in the
+   two states that matter — this line is new, or this line is different. */
+.gln.added::after, .gln.changed::after {
+  content: ""; position: absolute; right: 0; top: 0; bottom: 0; width: 2px;
+}
+.gln.added::after   { background: var(--ok); }
+.gln.changed::after { background: var(--warn); }
+
+.gln .mk {
+  position: absolute; left: 5px; top: calc(var(--ed-line-h) / 2 - 3px);
+  width: 6px; height: 6px; border-radius: 50%;
+}
+.gln .mk.error { background: var(--danger); }
+.gln .mk.warn  { background: var(--warn); }
+.gln .mk.info  { background: var(--ink-fn); }
+.gln .mk.hint  { background: var(--text-faint); }
+
+.ed-wrap { position: relative; flex: 1; min-width: 0; overflow: hidden; }
+
+/* The two layers that must agree to the pixel. Any difference in font, size,
+   line height, padding, tab size or wrapping between these rules and the
+   textarea below shows up immediately as text sliding out from under its own
+   caret, so they are written as one block on purpose. */
+.ed-lines, #ed-input {
+  font: 400 var(--ed-font-size)/var(--ed-line-h) var(--font-mono);
+  letter-spacing: 0; tab-size: 4; -moz-tab-size: 4;
+  white-space: pre; word-break: normal; overflow-wrap: normal;
+}
+.ed.wrapped .ed-lines, .ed.wrapped #ed-input { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.ed-lines { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 0; }
+.lin { position: absolute; top: 0; left: 0; padding: var(--ed-pad); will-change: transform; }
+.ed.wrapped .lin { right: 0; }
+.eline { min-height: var(--ed-line-h); color: var(--text); position: relative; }
+.eline.cur::before {
+  content: ""; position: absolute; left: calc(var(--ed-pad) * -1); right: -4000px;
+  top: 0; bottom: 0; z-index: -1;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border-left: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.ed.wrapped .eline.cur::before { right: calc(var(--ed-pad) * -1); }
+/* A short, soft flare on the line you just typed into. It is the only feedback
+   in the editor that is purely decorative, and it is gone in 300ms. */
+.eline.hit::after {
+  content: ""; position: absolute; left: calc(var(--ed-pad) * -1); right: -4000px;
+  top: 0; bottom: 0; z-index: -1; pointer-events: none;
+  background: linear-gradient(90deg,
+    color-mix(in srgb, var(--accent) 22%, transparent), transparent 42%);
+  animation: flare .34s var(--ease) forwards;
+}
+
+#ed-input {
+  position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%;
+  margin: 0; padding: var(--ed-pad); border: 0; outline: none; resize: none;
+  background: transparent; color: transparent; caret-color: var(--accent-strong);
+  overflow: auto; display: block;
+}
+#ed-input::selection { background: color-mix(in srgb, var(--accent) 34%, transparent); }
+#ed-input::placeholder { color: var(--text-faint); }
+#ed-input[readonly] { caret-color: transparent; }
+
+/* ── the minimap ──────────────────────────────────────────────────────────── */
+/* The viewport band on the minimap. Drawn as an element rather than into the
+   canvas so that scrolling moves one box rather than repainting the map. */
+.ed-map-band {
+  position: absolute; right: 0; width: 92px; z-index: 2; pointer-events: none;
+  border-top: 1px solid var(--accent-line);
+  border-bottom: 1px solid var(--accent-line);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.ed.no-map .ed-map-band { display: none; }
+@media (max-width: 1120px) { .ed-map-band { display: none; } }
+
+.ed-map {
+  flex: none; width: 92px; height: 100%; cursor: pointer; opacity: .82;
+  border-left: 1px solid color-mix(in srgb, var(--line) 50%, transparent);
+  background: color-mix(in srgb, var(--bg-deep) 30%, transparent);
+  transition: opacity .25s var(--ease);
+}
+.ed-map:hover { opacity: 1; }
+.ed.no-map .ed-map { display: none; }
+@media (max-width: 1120px) { .ed-map { display: none; } }
+
+/* ── syntax ───────────────────────────────────────────────────────────────── */
+.ide .tok-key   { color: var(--ink-key); font-weight: 600; }
+.ide .tok-str   { color: var(--ink-str); }
+.ide .tok-num   { color: var(--ink-num); }
+.ide .tok-com   { color: var(--ink-com); font-style: italic; }
+.ide .tok-fn    { color: var(--ink-fn); }
+.ide .tok-type  { color: var(--ink-type); }
+.ide .tok-const { color: var(--ink-const); }
+.ide .tok-op    { color: var(--ink-op); }
+.ide .tok-punc  { color: color-mix(in srgb, var(--text-dim) 72%, transparent); }
+.ide .tok-var   { color: var(--ink-var); }
+.ide .tok-tag   { color: var(--ink-tag); }
+.ide .tok-attr  { color: var(--ink-attr); }
+.ide .tok-esc   { color: var(--ink-const); }
+.ide .tok-head  { color: var(--ink-key); font-weight: 700; }
+.ide .tok-add   { color: var(--ok); }
+.ide .tok-del   { color: var(--danger); }
+
+/* ── find bar ─────────────────────────────────────────────────────────────── */
+.findbar {
+  position: absolute; top: 10px; right: 108px; z-index: 6; border-radius: 12px;
+  padding: 7px; display: flex; flex-direction: column; gap: 6px; min-width: 320px;
+  animation: drop-in .26s var(--spring);
+}
+.findbar[hidden] { display: none !important; }
+.find-row { display: flex; align-items: center; gap: 5px; }
+.find-row[hidden] { display: none !important; }
+.find-row input {
+  flex: 1; min-width: 0; height: 26px; padding: 0 9px; border-radius: 7px;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--bg) 60%, transparent);
+  color: var(--text); font: 400 12px var(--font-mono); outline: none;
+}
+.find-row input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.find-count { font-size: 10.5px; color: var(--text-faint); min-width: 46px; text-align: right; }
+.find-count.none { color: var(--danger); }
+
+/* ── dock ─────────────────────────────────────────────────────────────────── */
+.dock {
+  flex: none; height: var(--dock-h); min-height: 0; display: flex; flex-direction: column;
+  border-radius: 0; border-left: 0; border-right: 0; border-bottom: 0;
+}
+.stage.no-dock .dock, .stage.no-dock .dock-seam { display: none; }
+.dock-head {
+  flex: none; height: 30px; display: flex; align-items: center; gap: 4px; padding: 0 6px;
+  border-bottom: 1px solid var(--glass-edge);
+}
+.dock-tabs { display: flex; gap: 2px; }
+.dock-tab {
+  position: relative; border: 0; background: transparent; cursor: pointer;
+  padding: 4px 10px; border-radius: 7px; color: var(--text-faint);
+  font: 500 10.5px var(--font-ui); letter-spacing: .06em; text-transform: uppercase;
+  transition: color .18s var(--ease), background .18s var(--ease);
+}
+.dock-tab:hover { color: var(--text-dim); }
+.dock-tab.on { color: var(--accent-text); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.dbadge {
+  display: inline-block; min-width: 15px; padding: 0 4px; margin-left: 5px;
+  border-radius: 7px; background: var(--danger); color: var(--on-accent);
+  font: 600 9px/15px var(--font-ui); text-align: center;
+}
+.dock-body { flex: 1; min-height: 0; position: relative; }
+.dview { position: absolute; inset: 0; display: none; overflow: auto; }
+.dview.on { display: block; animation: panel-in .26s var(--spring); }
+#dock-terminal { overflow: hidden; display: none; }
+#dock-terminal.on { display: flex; flex-direction: column; }
+#dock-terminal .shell-host { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+#dock-output { padding: 8px 12px; font: 400 11.5px/1.6 var(--font-mono); color: var(--text-dim); }
+#dock-output .oline { white-space: pre-wrap; word-break: break-word; }
+#dock-output .oline.warn { color: var(--warn); }
+#dock-output .oline.error { color: var(--danger); }
+#dock-output .oline .ts { color: var(--text-faint); margin-right: 9px; }
+#dock-problems .prob { padding: 6px 12px; }
+
+/* ── the Code surface status bar ──────────────────────────────────────────── */
+.ide-status {
+  display: flex; align-items: center; gap: 1px; padding: 0 4px; z-index: 5;
+  border-top: 1px solid var(--glass-edge);
+  background: color-mix(in srgb, var(--bg-deep) 86%, transparent);
+  backdrop-filter: blur(16px);
+  font-size: 10px; color: var(--text-faint); overflow: hidden;
+}
+.ide-status .spacer { flex: 1; }
+.st-item {
+  display: flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px;
+  border: 0; border-radius: 5px; background: transparent; color: inherit;
+  font: 400 10px var(--font-ui); cursor: pointer; white-space: nowrap;
+  transition: background .16s var(--ease), color .16s var(--ease);
+}
+.st-item:hover { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--text); }
+.st-item svg { width: 11px; height: 11px; fill: none; stroke: currentColor;
+               stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+#st-save { color: var(--ok); }
+#st-save.saving { color: var(--warn); }
+#st-save.failed { color: var(--danger); }
+#st-save.done { animation: ring .7s var(--ease); }
+#st-problems.has-errors { color: var(--danger); }
+@media (max-width: 1000px) { #st-eol, #st-indent, #st-branch { display: none; } }
+
+/* ── quick open ───────────────────────────────────────────────────────────── */
+.palette.quick { max-height: 62vh; }
+.palette.quick .pf-icon { width: 14px; height: 14px; fill: none; stroke: var(--text-faint);
+                          stroke-width: 1.8; flex: none; }
+#quick-list { list-style: none; margin: 0; padding: 5px; overflow: auto; }
+#quick-list li {
+  display: flex; align-items: baseline; gap: 8px; padding: 6px 10px; border-radius: 8px;
+  cursor: pointer; color: var(--text-dim); font-size: 12px;
+}
+#quick-list li.active { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--text); }
+#quick-list li .qn { font-weight: 500; }
+#quick-list li .qp { font: 400 10.5px var(--font-mono); color: var(--text-faint);
+                     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#quick-list li b { color: var(--accent-text); }
+.palette-foot { padding: 6px 12px; border-top: 1px solid var(--line); color: var(--text-faint); }
+
+/* ── the surface switch ───────────────────────────────────────────────────── */
+.surfaces {
+  position: relative; display: flex; gap: 2px; padding: 2px; border-radius: 9px;
+  border: 1px solid var(--line); background: var(--surface-2); margin-left: 10px;
+  -webkit-app-region: no-drag;
+}
+.surface-btn {
+  position: relative; z-index: 1; display: flex; align-items: center; gap: 6px;
+  height: 22px; padding: 0 10px; border: 0; border-radius: 7px; background: transparent;
+  color: var(--text-faint); cursor: pointer; font: 500 11px var(--font-ui);
+  transition: color .2s var(--ease);
+}
+.surface-btn svg { width: 13px; height: 13px; fill: none; stroke: currentColor;
+                   stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.surface-btn.on { color: var(--accent-text); }
+.surface-btn:hover { color: var(--text); }
+.surface-ink {
+  position: absolute; top: 2px; bottom: 2px; left: 2px; z-index: 0; border-radius: 7px;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  border: 1px solid var(--accent-line);
+  transition: transform .32s var(--spring), width .32s var(--spring);
+}
+@media (max-width: 620px) { .surface-btn span { display: none; } .surface-btn { padding: 0 8px; } }
+
+/* ── responsive ───────────────────────────────────────────────────────────
+   Below 1240px the mission panel goes; below 1000px the side panel becomes an
+   overlay rather than a track, so the editor keeps its width. The activity bar
+   never goes: it is the only way back to a hidden panel. */
+@media (max-width: 1240px) {
+  .ide { grid-template-columns: var(--abar-w) var(--side-w) 4px minmax(220px, 1fr) 0 0; }
+  .ide .mission, .ide #ide-seam-r { display: none; }
+  .ide.show-mission .mission {
+    display: flex; position: absolute; top: 0; right: 0; bottom: 24px;
+    width: min(320px, 86vw); z-index: 30; border-left: 1px solid var(--glass-edge);
+    animation: slide-left .3s var(--spring);
+  }
+}
+@media (max-width: 1000px) {
+  .ide { grid-template-columns: var(--abar-w) 0 0 minmax(200px, 1fr) 0 0; }
+  .ide .side, .ide #ide-seam-l { display: none; }
+  .ide.show-side .side {
+    display: flex; position: absolute; top: 0; left: var(--abar-w); bottom: 24px;
+    width: min(280px, 76vw); z-index: 30; border-right: 1px solid var(--glass-edge);
+    animation: slide-right .3s var(--spring);
+  }
+}
+@media (max-width: 700px) {
+  .ide { --gutter-w: 44px; --ed-pad: 9px; }
+  .ide-status { font-size: 9px; }
+  #st-position, #st-wrap { padding: 0 5px; }
+}
+
+/* ── motion ───────────────────────────────────────────────────────────────
+   Every animation in this file, in one place, so that the query at the end can
+   turn all of it off and mean it. */
+@keyframes drift-a {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  50%      { transform: translate3d(7vw, 5vh, 0) scale(1.12); }
+}
+@keyframes drift-b {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1.05); }
+  50%      { transform: translate3d(-6vw, -7vh, 0) scale(.94); }
+}
+@keyframes drift-c {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(.96); }
+  50%      { transform: translate3d(4vw, -6vh, 0) scale(1.14); }
+}
+@keyframes panel-in  { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+@keyframes row-in    { from { opacity: 0; transform: translateX(-7px); } to { opacity: 1; transform: none; } }
+@keyframes tab-in    { from { opacity: 0; transform: translateY(-6px) scaleX(.86); filter: blur(3px); }
+                       to   { opacity: 1; transform: none; filter: none; } }
+@keyframes mark-in   { from { opacity: 0; transform: scaleX(.3); } to { opacity: 1; transform: none; } }
+@keyframes drop-in   { from { opacity: 0; transform: translateY(-10px) scale(.97); } to { opacity: 1; transform: none; } }
+@keyframes slide-right { from { transform: translateX(-100%); } to { transform: none; } }
+@keyframes slide-left  { from { transform: translateX(100%); } to { transform: none; } }
+@keyframes flare     { from { opacity: .9; } to { opacity: 0; } }
+@keyframes beam      { from { transform: translateX(-100%); opacity: .8; }
+                       to   { transform: translateX(100%); opacity: 0; } }
+@keyframes float     { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
+@keyframes breathe   { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+@keyframes ping {
+  0%   { box-shadow: 0 0 0 0 var(--accent-glow); }
+  70%  { box-shadow: 0 0 0 7px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+@keyframes ring {
+  0%   { text-shadow: 0 0 0 var(--accent-glow); transform: scale(1); }
+  40%  { transform: scale(1.14); }
+  100% { text-shadow: none; transform: scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ide *, .ide *::before, .ide *::after,
+  #quick-wrap *, .surfaces * {
+    animation: none !important;
+    transition-duration: .01ms !important;
+  }
+  .aurora { opacity: .5; }
+  .glass::before { display: none; }
+}

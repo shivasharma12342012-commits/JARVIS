@@ -20,8 +20,11 @@ languages including Hindi, Bengali, Telugu, Marathi and Tamil.
 
 | | |
 |---|---|
-| **Desktop app** | `jarvis-desktop` opens a real three-pane window: navigation and a workspace tree on the left, the conversation in the middle, and a panel rail on the right holding a code viewer, a working shell, the agentic HUD, the log and the instruments. Runs on the standard library alone — no Electron, no bundle, no extra install. |
-| **Code section** | A file browser and a syntax-highlighted viewer, sandboxed to the workspace. Open-file tabs, a line-number gutter, breadcrumbs, soft wrap, copy, and *Ask about this* to drop the path straight into the composer. |
+| **Desktop app** | `jarvis-desktop` opens a real window with two surfaces — a conversation and a full editor — switched with `Ctrl`+`Shift`+`C`. Runs on the standard library alone: no Electron, no bundle, no extra install. |
+| **A separate Code surface** | Not a panel: a second window inside the window. Activity bar, explorer, workspace search, outline, problems, a bottom dock, a mission panel, and a status bar where every field is a button. |
+| **An editor that edits** | Open, change and save, sandboxed to the workspace. Auto-indent, bracket pairs, comment toggling, move and duplicate lines, find and replace, go to line, fuzzy open, a minimap, change bars in the gutter, and native undo because it is built on a real text area. |
+| **54 languages** | One tokeniser, fifty-four grammars, and your colours rather than a palette of its own. The round trip is checked against every file in this repository: strip the spans, unescape, get the source back character for character. |
+| **Glass** | Translucent panels with lit edges and a specular highlight that follows the pointer, over three washes of your accent drifting on mutually prime periods. Every bit of it stops under `prefers-reduced-motion`. |
 | **Logs** | The session as it happens — timestamp, level, message — filterable by level, fed by the same event stream as everything else. |
 | **A real terminal** | PowerShell on Windows, your login shell elsewhere, running as one long-lived process beside the conversation. `cd` sticks, variables persist, history on the arrow keys, exit codes in red. |
 | **The agentic HUD, in the app** | Its own grammar — `⏺` for what J.A.R.V.I.S. did, `⎿` for what came back — streaming live in its own tab. The terminal front end is not replaced by the window; it is reproduced in it, and still runs on its own. |
@@ -538,7 +541,19 @@ Inside a session already running in the terminal, `/desktop` opens a window onto
 typed in the window arrives exactly as if it had been typed in the terminal, and
 everything J.A.R.V.I.S. says appears in both. `/desktop close` puts it away.
 
-### The window
+The window has **two surfaces**, switched from the title bar or with
+`Ctrl`+`Shift`+`C`:
+
+| | |
+|---|---|
+| **Chat** | The conversation. Quiet, grey, restrained — you read it for hours. |
+| **Code** | A full editor. Not quiet at all. |
+
+They share the title bar, the theme and the event stream, and nothing else. Each has its
+own layout and its own keyboard map, because a conversation and an editor want opposite
+things from the same pixels.
+
+### Chat
 
 Three panes, two draggable seams, a status bar. The shape is Hermes Desktop's, because
 Hermes got it right: chat first, with a preview rail on the right so reading a file never
@@ -548,10 +563,10 @@ costs you your place in the conversation.
 ┌────────────────────────────────────────────────────────────────────────────┐
 │ ▤ ⇄  session name                              ▤ ◍ ⌨ ☀ ☰  │  ─  □  ✕       │
 ├──────────────┬───────────────────────────────┬──────────────────────────┬──┤
-│ New session  │                               │ CODE TERMINAL AGENT LOGS │<>│
+│ New session  │                               │ TERMINAL AGENT LOGS SYS  │>_│
 │ Capabilities │                               ├──────────────────────────┤>_│
 │ Messaging    │         J.A.R.V.I.S.          │ ~/J.A.R.V.I.S $ pwd      │◎ │
-│ Artifacts    │                               │ /home/you/J.A.R.V.I.S    │≡ │
+│ Code       2 │                               │ /home/you/J.A.R.V.I.S    │≡ │
 │ ⌕ Search…    │   Ask a question, paste an    │ ~/J.A.R.V.I.S $ cd jarvis│▤ │
 │              │   error, or point me at a     │ ~/…/jarvis $ ls          │  │
 │ PINNED       │   repository.                 │ core.py  theme.py  …     │  │
@@ -568,10 +583,9 @@ costs you your place in the conversation.
 
 | | |
 |---|---|
-| **Sidebar** | Navigation, session search, pinned sessions, sessions grouped by day, and a lazily-loaded workspace tree with file sizes. Click a file to open it in the code view. |
+| **Sidebar** | Navigation, session search, pinned sessions, sessions grouped by day, and a lazily-loaded workspace tree with file sizes. Click a file and it opens on the Code surface. |
 | **Transcript** | Replies stream in word by word behind a caret, then settle into rendered Markdown — headings, lists, tables, quotes, and code blocks with a Copy button. |
 | **Instrument cards** | Every tool call appears as a card that spins while it runs and resolves in place with its reading. |
-| **Code** | Open-file tabs, breadcrumbs, a sticky line-number gutter that does not select with the code, syntax colouring drawn from your own theme, soft wrap, and *Ask about this*. |
 | **Terminal** | A real shell — PowerShell, bash, zsh. The next section. |
 | **Agent** | The agentic HUD, live, in the app. Same events as the transcript, rendered in the terminal's grammar. |
 | **Logs** | Timestamp, level, message — the three columns you actually scan a log by — filterable, and carrying the instrument calls as well as the system lines. |
@@ -579,13 +593,16 @@ costs you your place in the conversation.
 | **Permission cards** | The consent layer, as a card with *Allow once* / *Always allow* / *Deny*. Nothing reaches outside the workspace without one. |
 | **Status bar** | State, model, workspace root, open file, last turn's latency, live CPU, and whether the event stream is connected. |
 | **Command palette** | `Ctrl`+`K` for every command, every protocol and every rail view. |
-| **Colour studio** | `Ctrl`+`/`. The next section. |
+| **Colour studio** | `Ctrl`+`,`. Further down. |
 
 Keys: `Enter` sends, `Shift`+`Enter` newlines, `/` opens command completion, `Ctrl`+`K`
-the palette, `Ctrl`+`/` appearance, `Ctrl`+`B` the rail, `Ctrl`+`\` the sidebar,
-`Ctrl`+`1`–`5` the rail views, `Ctrl`+`N` a new session, `?` the full sheet, `Esc`
-interrupts. Start typing anywhere and the composer takes it. Both seams drag, and
-remember their width.
+the palette, `Ctrl`+`,` appearance, `Ctrl`+`B` the rail, `Ctrl`+`\` the sidebar,
+`Ctrl`+`1`–`4` the rail views, `Ctrl`+`N` a new session, `Ctrl`+`.` interrupts, `?` the
+full sheet. Start typing anywhere and the composer takes it — including the character you
+typed, which the earlier version swallowed. Both seams drag and remember their width.
+
+`Esc` closes what is open and nothing more. It used to interrupt the running turn when no
+panel was showing, which made a reflex into a way to lose work.
 
 ### The terminal
 
@@ -620,22 +637,145 @@ this adds a pane rather than a privilege. Every line is written to the log file 
 runs. Set `DESKTOP_SHELL_ENABLED=false` in your `.env` to remove the pane entirely and
 have the route refuse outright.
 
-### The code section
+## The Code surface
 
-The file browser and the viewer see the workspace — `WORKSPACE_ROOT`, the same root the
-`file_ops` tool is bounded by — and nothing else. Every path the window asks for is
-resolved, symlinks and `..` and all, and then checked against that root before a single
-byte is read. `tests/test_desktop.py` asserts the refusals directly: `../`, an absolute
-path, a nested escape, and a symlink pointing out of the tree.
+Not a tab in the conversation. A second window inside the same window, with its own
+layout, its own keyboard map and its own visual register.
 
-Binary files are reported rather than decoded, long files are truncated and say so, and
-`__pycache__`, `.git`, `node_modules` and their friends never appear in a listing. An
-extensionless script is coloured from its shebang, because `jarvis-desktop` is one.
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│ ▤ ⇄  session name        ┃ ꒨ Chat ┃ <> Code ┃          │  ─  □  ✕           │
+├──┬───────────────┬────────────────────────────────┬────────────────┤
+│▤ │ EXPLORER    ↻ < │ desktop.py ✕  theme.py ✕          │ MISSION      ● ›│
+│⌕ │ › jarvis       │ J.A.R.V.I.S › jarvis › desktop.py     ├────────────────┤
+│≡ │ › tests        │ 596 def language_for(path):    ▐█▖ │ ● Idle        │
+│⚠ │   config.py    │ 597     """The language…"""     ▐██ │ ┌──────────────┐ │
+│◎ │   main.py      │ 598     by_name = FILENAMES…    ▐█▌ │ │ Ask about   │ │
+│  │   README.md    │ 599     if by_name:            ▐█  │ │ this file…  │ │
+│  │                │█600         return by_name     ▐██▖│ └──────────────┘ │
+│  │                │ 601     by_suffix = LANGUAGES…  ▐█▌ │ whole file  Send│
+│  │                ├──────────────────────────────────┤ ACTIVITY        │
+│  │                │ PROBLEMS  OUTPUT  TERMINAL   ⌗ ⌄ │ ● read theme.py │
+│☀ │                │ PS ~\reactor> python -c "…"     │ ● edited …      │
+│⌨ │                │ 4294967296                       │                │
+├──┴───────────────┴────────────────────────────────┴────────────────┤
+│ ⎇ J.A.R.V.I.S  ⚠ 0          Ln 600, Col 1  Spaces: 4  LF  Python  No wrap │
+└──────────────────────────────────────────────────────────────────┘
+```
 
-The highlighter is small and deliberately generic — one tokeniser, a keyword list per
-language, and **your** colours rather than a palette of its own. It runs on escaped text
-and emits nothing but `<span class="tok-…">`, so a file full of angle brackets is
-coloured, never executed; the round trip is verified to return the source byte for byte.
+| | |
+|---|---|
+| **Activity bar** | Explorer, Search, Outline, Problems, Agent. Click the one already showing to collapse the panel. |
+| **Explorer** | The workspace tree, lazily loaded, rows revealing in sequence. |
+| **Search** | Literal text across every file, grouped by file, the match picked out in each line. Click a hit to land on it. |
+| **Outline** | The symbols in the open file — functions, classes, structs, traits, headings — derived per language. |
+| **Problems** | Unbalanced brackets, merge-conflict markers, mixed tabs and spaces, trailing whitespace, `TODO`/`FIXME`. Marked in the gutter and listed in the dock. |
+| **Agent** | Six things worth asking about a file — Explain, Review, Simplify, Tests, Document, Fix — and the files touched this session. |
+| **Editor** | Tabs, breadcrumbs, line numbers, active-line band, change bars, a minimap you can drag, soft wrap. |
+| **Dock** | Problems, Output, and the terminal. |
+| **Mission** | What state J.A.R.V.I.S. is in, a box to ask about the open file or the current selection, and a live feed of what he is doing. |
+| **Status bar** | Workspace, problem count, line and column, indent width, line endings, language, wrap. Every one of them is a button. |
+
+### The editor
+
+It edits. A transparent `<textarea>` sits exactly on top of a highlighted copy of the
+same text, which is a deliberate choice and not a shortcut: every edit goes through the
+browser's own editing machinery, so undo, redo, autorepeat, IME composition and the caret
+all behave the way the platform says they should, for nothing. The price is that the two
+layers must agree to the character — which is why every operation below is made with
+`insertText` rather than by assigning to `value`, and why `tests/test_ui.py` checks the
+painted layer against the buffer after opening a docstring and undoing it.
+
+| | |
+|---|---|
+| `Ctrl`+`S` | Save |
+| `Ctrl`+`P` | Open a file by name, fuzzy |
+| `Ctrl`+`F` / `Ctrl`+`H` | Find / find and replace |
+| `Ctrl`+`G` | Go to line |
+| `Ctrl`+`/` | Toggle comment, in that language's comment style |
+| `Ctrl`+`D` | Duplicate the line or the selection |
+| `Ctrl`+`Shift`+`K` | Delete the line |
+| `Alt`+`↑` / `Alt`+`↓` | Move the line |
+| `Tab` / `Shift`+`Tab` | Indent / outdent, selection-aware |
+| `Alt`+`Z` | Soft wrap |
+| `Alt`+`W` | Close the file |
+| `Ctrl`+`B` / `Ctrl`+`Shift`+`B` / `Ctrl`+`J` | Side panel / mission panel / dock |
+| `Ctrl`+``` | Terminal |
+| `Ctrl`+`Shift`+`E`/`F`/`O`/`M`/`A` | Explorer / Search / Outline / Problems / Agent |
+
+Closing a bracket or a quote closes it for you, and typing one around a selection wraps
+it. `Enter` keeps your indentation and adds a level after anything that opens a block;
+pressed between a bracket and its partner it opens the pair out into three lines with the
+caret on the middle one. `Backspace` in leading whitespace takes a whole indent, and
+between a pair takes both. `Home` goes to the first non-space, then to column one.
+
+It is **`Alt`+`W`, not `Ctrl`+`W`**, to close a file. `Ctrl`+`W` closes the window in
+every browser and most desktop webviews, and an editor that can lose the session to a
+typo is not one you would leave a file open in.
+
+### Saving
+
+`Ctrl`+`S` writes the file. It is bounded by `WORKSPACE_ROOT` — the same root the
+`file_ops` tool is bounded by, through the same resolve-then-compare boundary the reader
+uses, so there is exactly one place where the edge is decided. The write goes to a
+temporary file beside the target and is moved into place, so a failure halfway through
+leaves the original intact rather than a truncated one.
+
+Each read hands back a short digest of the file, and each save sends it back. If the file
+changed on disk in between — which is the ordinary case here, not an exotic one, because
+an agent turn rewriting the file you have open is the whole point of the window — the
+save is refused and you are asked, rather than one of you silently losing the work. The
+other direction is covered too: when a tool call names a file you have open and you have
+no unsaved changes, the editor quietly reloads it; when you do have changes, it says so
+and leaves your version alone.
+
+`DESKTOP_EDIT_ENABLED=false` makes the editor read-only and the route refuse.
+`DESKTOP_EDIT_MAX_BYTES` caps one save.
+
+### Thirty languages, one tokeniser
+
+`jarvis/web/lang.js` carries **54 language definitions** — Python, JavaScript,
+TypeScript, Rust, Go, C, C++, C#, Java, Kotlin, Swift, Ruby, PHP, Perl, shell,
+PowerShell, batch, SQL, HTML, CSS, JSON, YAML, TOML, INI, XML, Markdown, Lua, R, Julia,
+Elixir, Erlang, Haskell, Scala, Dart, Zig, Nim, V, Clojure, Lisp, OCaml, F#, Groovy,
+Solidity, Terraform, Protobuf, GraphQL, Vim script, assembly, LaTeX, diff, Dockerfile,
+Makefile, CMake and plain text — each with its keywords, its comment style, its string
+rules, its indent and dedent shapes, and how a symbol is recognised in it.
+
+Markup, stylesheets, prose, patches and key/value data get their own line handlers,
+because pushing them through a tokeniser built for words and brackets produces something
+worse than no colour at all.
+
+The tokeniser works on the **raw** line and escapes each piece as it emits it. The
+earlier one did the opposite — escaped first, then matched — and any rule that consumed
+a byte on its own could cut an entity in half, which reached the screen as a literal
+`&quot;`. Escaping last makes that whole class of bug unreachable. The round trip is
+checked against every file in this repository: strip the spans, unescape, and you must
+get the source back, character for character. Nearly thirty thousand lines, no drift.
+
+Colour comes from your seed. Six anchor hues — keyword, string, number, function, type,
+constant — are each blended into your accent through `color-mix`, so a violet theme gets
+violet-leaning strings rather than the same green every editor ships, and there is not one
+literal hue in the stylesheet that is not mixed into your colour first.
+
+### Glass
+
+The conversation is grey and flat on purpose. This surface is not.
+
+Every panel is real glass: a translucent fill, a blur of what is behind it, a lit top lip
+and a dark bottom one, and a specular highlight that follows the pointer. Behind them,
+three very large washes of your accent drift on periods of 47, 61 and 83 seconds —
+mutually prime, so the field never visibly repeats — and an SVG turbulence field
+displaces what shows through the edges by a couple of pixels, which is what makes a border
+read as thick glass rather than as a blurred rectangle.
+
+Panels settle on a spring rather than a line. Tabs arrive with a small blur. Tree rows
+reveal in sequence. The line you are typing into flares for a third of a second. A file
+the agent has just written to gets one sweep of light in the tree and then stops.
+
+All of it is listed under a single `prefers-reduced-motion` query and all of it stops
+there — which the test suite checks by counting running animations, not by reading the
+stylesheet.
 
 ### The terminal, still
 
@@ -645,7 +785,12 @@ The full-screen Textual HUD is untouched: `python main.py` still opens it, `/des
 opens a window *onto that same session*, and closing the window hands the terminal its
 HUD back. One agent core, several surfaces, exactly as before.
 
-And the window has its own Terminal tab that renders the same event stream in the HUD's
+There is also exactly **one** shell, whichever surface you are on. The Code surface does
+not build a second terminal in its dock; it moves the pane there and hands it back when
+you return to the conversation, so the scrollback, the history and the running command are
+the same object wherever you happen to be looking at it.
+
+And the window has its own Agent tab that renders the same event stream in the HUD's
 grammar: `⏺` opening anything J.A.R.V.I.S. did or said, `⎿` hanging the result under it,
 `›` marking what you typed. Markdown is flattened to prose there — fenced code keeps its
 body verbatim, so `a * b * c` does not quietly lose its operators to an italics rule.
@@ -659,8 +804,9 @@ rewrite in every GUI toolkit. It also must not add a hundred megabytes to a proj
 installs from a short requirements file.
 
 So the server is **standard library only**: `http.server`, one long-lived `GET` for
-Server-Sent Events, and three static files. No Flask, no websockets package, no bundler,
-no Electron, nothing new in `requirements.txt`. The window itself is whichever of these
+Server-Sent Events, and five static files — two stylesheets and three scripts, none of
+them minified, none of them built. No Flask, no websockets package, no bundler, no
+Electron, nothing new in `requirements.txt`. The window itself is whichever of these
 the machine has, best first: `pywebview` if it happens to be installed, otherwise a
 Chromium-family browser in `--app` mode (no tabs, no address bar, its own profile), and
 failing both, an ordinary tab.
@@ -690,7 +836,7 @@ The colour is still there. It is one slider away, and it goes all the way.
 /theme                  # what am I wearing?
 ```
 
-Or open the studio (`Ctrl`+`/` in the window) and drag the wheel. Every control is live:
+Or open the studio (`Ctrl`+`,` in the window) and drag the wheel. Every control is live:
 the interface recolours as you move, and the choice is written to `.jarvis_theme.json`
 the moment you let go, so it is there next time — **in the terminal HUDs as well**. A
 colour is not a desktop-app setting; it is how you want J.A.R.V.I.S. to look.
@@ -897,7 +1043,7 @@ pip install pytest pytest-asyncio
 pytest -q
 ```
 
-Two hundred and eighty-nine tests, no Ollama daemon and no microphone, well
+Three hundred and sixteen tests, no Ollama daemon and no microphone, well
 under two minutes. Most need no browser either; the handful in
 `tests/test_ui.py` drive the real front end through Playwright and skip
 themselves cleanly when it is not installed. The model is a scripted fake and the HUD is driven
@@ -907,15 +1053,27 @@ cancellation, the transcript, the modal dialogs and the whole boot sequence.
 The desktop app is driven over its own HTTP API with `urllib`, exactly as the
 front end drives it, so a passing suite means the front end has something real
 to talk to. `tests/test_ui.py` goes one further and drives the rendered
-interface itself: it asserts that the conversation never collapses at any of
-eight widths, that nothing spills out of the window, that a closed pane stays
-closed across a reload, and that copying a block of code does not bring the
-line numbers with it. Every one of those guards a bug that was found by looking
-at the interface rather than by reading it. That includes the security properties — no token, wrong token,
+interface itself. Every guard there names a bug that was found by using the
+interface rather than by reading it:
+
+· the conversation never collapses at any of eight widths, and neither does the
+  editor stage;
+· nothing spills out of the window, and the page never scrolls sideways;
+· a closed pane stays closed across a reload;
+· the editor's painted layer is the buffer, character for character, even after
+  opening a docstring and undoing it;
+· an editor shortcut does not also fire the conversation's — `Ctrl`+`Shift`+`K`
+  deleted a line *and* opened the command palette on top of it;
+· the terminal is moved between the two surfaces, never duplicated;
+· typing into the page keeps the character that moved the focus;
+· `Esc` does not interrupt a running turn.
+
+That includes the security properties — no token, wrong token,
 a forged `Host`, a cross-origin request and `../` in a static path are each
-asserted to be refused, and so are the workspace escapes the code section could
-otherwise become — `../`, absolute paths, nested traversal and out-of-tree
-symlinks. The colour engine is checked by arithmetic rather than against fixed
+asserted to be refused, and so are the workspace escapes the editor could
+otherwise become. Reads and writes go through one boundary and both are held to
+it: `../`, nested traversal, out-of-tree symlinks, an oversized save, a save
+with editing switched off, and a save over a file that changed underneath you. The colour engine is checked by arithmetic rather than against fixed
 hex values: every derived text colour must clear WCAG AA against its own
 background, for the eight most awkward seeds on all three grounds.
 
@@ -939,6 +1097,9 @@ Copy `.env.example` to `.env`. Every key is optional; the defaults are already s
 | `RESPONSE_LOCALE` | `auto` | Pin a language, or auto-detect |
 | `RAM_ALERT_THRESHOLD` | `90` | Ambient alert threshold (%) |
 | `SHELL_TOOL_ENABLED` | `true` | Whether `run_command` exists |
+| `DESKTOP_SHELL_ENABLED` | `true` | Whether the window has a terminal at all |
+| `DESKTOP_EDIT_ENABLED` | `true` | Whether the editor may write to disk |
+| `DESKTOP_EDIT_MAX_BYTES` | `2000000` | Ceiling on one save |
 | `WORKSPACE_ROOT` | project directory | The boundary he may act inside freely |
 | `PERMISSION_MODE` | `ask` | `ask` · `allow` · `deny` for everything beyond it |
 | `ALLOWED_APPS` | *(empty)* | Applications that never need approval |
@@ -969,7 +1130,13 @@ jarvis/
   desktop.py         The desktop HUD: local server, event stream, window
   shell.py           The Terminal pane's shell: PowerShell, bash, zsh
   theme.py           The colour engine: one seed in, a whole interface out
-  web/               The desktop front end: one page, one stylesheet, one script
+  web/
+    index.html       The desktop front end: one page, two surfaces
+    app.css          The conversation
+    app.js           The conversation: transcript, composer, rail, shell, theme
+    ide.css          The Code surface: glass, the editor, the panels
+    ide.js           The Code surface: editor, tabs, search, outline, problems
+    lang.js          54 language grammars and the tokeniser they drive
   prompts.py         System prompt and personality
 jarvis-desktop       Launcher script (jarvis-desktop.bat on Windows)
 tests/               Engine, HUD, colour, desktop and boot tests; no daemon, no

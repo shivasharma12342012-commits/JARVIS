@@ -9,6 +9,7 @@
      paint is already their theme. No flash of somebody else's grey. -->
 <style id="theme-vars">__JARVIS_THEME_CSS__</style>
 <link rel="stylesheet" href="/static/app.css?token=__JARVIS_TOKEN__">
+<link rel="stylesheet" href="/static/ide.css?token=__JARVIS_TOKEN__">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='38' fill='none' stroke='%238b9099' stroke-width='7'/><circle cx='50' cy='50' r='15' fill='%238b9099'/></svg>">
 </head>
 <body>
@@ -17,6 +18,24 @@
      At the shipped glow of 0.10 they are all but invisible, which is the point:
      they exist so that turning the glow up has somewhere to go, not so that the
      default looks like a screensaver. -->
+<!-- The lens the glass panels are seen through. A turbulence field displaces
+     what is behind the panel by a couple of pixels, which is what makes an edge
+     read as thick glass rather than as a blurred rectangle. It is declared once
+     and referenced by class; nothing here paints on its own. -->
+<svg class="filter-defs" aria-hidden="true" focusable="false">
+  <defs>
+    <filter id="lens" x="-12%" y="-12%" width="124%" height="124%" color-interpolation-filters="sRGB">
+      <feTurbulence type="fractalNoise" baseFrequency="0.008 0.014" numOctaves="2" seed="7" result="noise"/>
+      <feGaussianBlur in="noise" stdDeviation="1.4" result="soft"/>
+      <feDisplacementMap in="SourceGraphic" in2="soft" scale="9" xChannelSelector="R" yChannelSelector="G"/>
+    </filter>
+    <filter id="lens-soft" x="-8%" y="-8%" width="116%" height="116%" color-interpolation-filters="sRGB">
+      <feTurbulence type="fractalNoise" baseFrequency="0.012" numOctaves="1" seed="3" result="n"/>
+      <feDisplacementMap in="SourceGraphic" in2="n" scale="4" xChannelSelector="R" yChannelSelector="B"/>
+    </filter>
+  </defs>
+</svg>
+
 <div class="ambience" aria-hidden="true">
   <span class="bloom bloom-a"></span>
   <span class="bloom bloom-b"></span>
@@ -33,19 +52,31 @@
 
   <span class="tb-title" id="session-title">New session</span>
 
+  <!-- The two surfaces. Not a panel and not a tab inside one: the whole window
+       changes, because a conversation and an editor want opposite things from
+       the same pixels. -->
+  <div class="surfaces" role="tablist" aria-label="Surface">
+    <button class="surface-btn on" data-surface="chat" role="tab" aria-selected="true">
+      <svg viewBox="0 0 24 24"><path d="M4 5.5h16v10a2 2 0 0 1-2 2H9l-4 3v-3H4z"/></svg>
+      <span>Chat</span>
+    </button>
+    <button class="surface-btn" data-surface="code" role="tab" aria-selected="false">
+      <svg viewBox="0 0 24 24"><path d="M9 8l-4 4 4 4M15 8l4 4-4 4"/></svg>
+      <span>Code</span>
+    </button>
+    <i class="surface-ink" aria-hidden="true"></i>
+  </div>
+
   <span class="spacer"></span>
 
   <div class="titlebar-actions">
     <button class="icon-btn sm" id="btn-rail" title="Panels  ·  Ctrl+B" aria-label="Toggle the right panel">
       <svg viewBox="0 0 24 24"><rect x="3" y="4.5" width="8" height="15" rx="1.5"/><rect x="13" y="4.5" width="8" height="15" rx="1.5"/></svg>
     </button>
-    <button class="icon-btn sm" id="btn-mute-all" title="Sound" aria-label="Sound">
-      <svg viewBox="0 0 24 24"><path d="M5 9.5v5h3l4 3.5v-12L8 9.5zM16 9.5a4 4 0 0 1 0 5"/></svg>
-    </button>
     <button class="icon-btn sm" id="btn-keys" title="Keyboard shortcuts  ·  ?" aria-label="Keyboard shortcuts">
       <svg viewBox="0 0 24 24"><rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6.5 10h.01M10 10h.01M13.5 10h.01M17 10h.01M8 14h8"/></svg>
     </button>
-    <button class="icon-btn sm" id="btn-palette" title="Appearance  ·  Ctrl+/" aria-label="Appearance">
+    <button class="icon-btn sm" id="btn-palette" title="Appearance  ·  Ctrl+," aria-label="Appearance">
       <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M18.4 5.6L17 7M7 17l-1.4 1.4"/></svg>
     </button>
     <button class="icon-btn sm" id="btn-command" title="Commands  ·  Ctrl+K" aria-label="Commands">
@@ -78,9 +109,9 @@
           <svg viewBox="0 0 24 24"><path d="M4 5.5h16v10a2 2 0 0 1-2 2H9l-4 3v-3H4z"/></svg>
           <span>Messaging</span>
         </button></li>
-        <li><button class="nav-item" data-rail="code">
-          <svg viewBox="0 0 24 24"><path d="M6.5 3.5h7l5 5v12h-12z"/><path d="M13.5 3.5v5h5"/></svg>
-          <span>Artifacts</span><span class="tally" id="artifact-count">0</span>
+        <li><button class="nav-item" id="btn-goto-code">
+          <svg viewBox="0 0 24 24"><path d="M9 8l-4 4 4 4M15 8l4 4-4 4"/></svg>
+          <span>Code</span><span class="tally" id="artifact-count">0</span>
         </button></li>
       </ul>
 
@@ -186,7 +217,6 @@
   <aside class="rail" id="rail" aria-label="Panels">
     <div class="rail-head">
       <div class="rail-tabs" role="tablist">
-        <button class="rail-tab" data-view="code" role="tab" aria-selected="false">Code</button>
         <button class="rail-tab on" data-view="terminal" role="tab" aria-selected="true">Terminal</button>
         <button class="rail-tab" data-view="agent" role="tab" aria-selected="false">Agent</button>
         <button class="rail-tab" data-view="logs" role="tab" aria-selected="false">Logs</button>
@@ -195,31 +225,14 @@
     </div>
 
     <div class="rail-body">
-      <!-- Code -->
-      <div class="rail-view" id="view-code" role="tabpanel">
-        <div class="tabstrip" id="tabstrip"></div>
-        <div class="crumbs" id="crumbs"></div>
-        <div class="code-host" id="code-host">
-          <div class="pane-empty" id="code-empty">
-            <p>No file open.</p>
-            <p class="dim">Pick one from the workspace tree, or ask J.A.R.V.I.S. to open it.</p>
-          </div>
-          <div class="code-scroll" id="code-scroll" hidden>
-            <table class="code-table"><tbody id="code-body"></tbody></table>
-          </div>
-        </div>
-        <div class="pane-foot" id="code-foot" hidden>
-          <span id="code-meta" class="mono"></span>
-          <span class="spacer"></span>
-          <button class="mini-btn wide" id="btn-code-wrap" title="Soft-wrap long lines">Wrap</button>
-          <button class="mini-btn wide" id="btn-code-copy">Copy</button>
-          <button class="mini-btn wide" id="btn-code-ask">Ask</button>
-        </div>
-      </div>
-
       <!-- Terminal: the real system shell — PowerShell on Windows, the login
            shell elsewhere — running as a long-lived process so cd sticks. -->
       <div class="rail-view on" id="view-terminal" role="tabpanel">
+        <!-- One wrapper around the pane and its footer, because the Code
+             surface does not build a second terminal: it moves this one into
+             its dock and hands it back on the way out. One shell, one
+             scrollback, one history, wherever you are looking at it. -->
+        <div class="shell-host" id="shell-host">
         <div class="shellpane" id="shell-pane">
           <!-- The prompt lives inside the scroller, directly under the last line
                of output, which is where a terminal puts it. -->
@@ -238,6 +251,7 @@
           <button class="mini-btn wide" id="btn-shell-stop" title="Interrupt  ·  Ctrl+C">Interrupt</button>
           <button class="mini-btn wide" id="btn-shell-restart">Restart</button>
           <button class="mini-btn wide" id="btn-shell-clear">Clear</button>
+        </div>
         </div>
       </div>
 
@@ -298,9 +312,6 @@
 
   <!-- The narrow strip of view icons down the outer edge. -->
   <div class="edge" id="edge" aria-label="Panels">
-    <button class="edge-btn" data-view="code" title="Code" aria-label="Code">
-      <svg viewBox="0 0 24 24"><path d="M9 8l-4 4 4 4M15 8l4 4-4 4"/></svg>
-    </button>
     <button class="edge-btn on" data-view="terminal" title="Terminal" aria-label="Terminal">
       <svg viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="2"/><path d="M7 9.5l3 2.5-3 2.5M12.5 15h4"/></svg>
     </button>
@@ -315,6 +326,239 @@
     </button>
   </div>
 </main>
+
+<!-- ══ the Code surface ════════════════════════════════════
+
+     A whole second window, not a panel. It shares the title bar, the status bar
+     and the event stream with the conversation, and nothing else: its own
+     layout, its own keyboard map, its own visual register.
+
+     The conversation stays deliberately quiet. This does not. Glass, depth and
+     motion are the point here, and every one of them is switched off under
+     prefers-reduced-motion.
+     ══════════════════════════════════════════════════════════════════ -->
+<main class="ide" id="ide" hidden>
+
+  <!-- Three slow radial washes, drifting on long, prime-ish periods so they
+       never visibly loop. This is the only thing in the app that moves on its
+       own, and it moves slower than the eye tracks. -->
+  <div class="aurora" aria-hidden="true"><i class="a1"></i><i class="a2"></i><i class="a3"></i></div>
+
+  <!-- ── activity bar ── -->
+  <nav class="abar" id="abar" aria-label="Panels">
+    <button class="abtn on" data-panel="explorer" title="Explorer  ·  Ctrl+Shift+E" aria-label="Explorer">
+      <svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h3.5l2 2H19a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+    </button>
+    <button class="abtn" data-panel="search" title="Search  ·  Ctrl+Shift+F" aria-label="Search">
+      <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M15.5 15.5L20 20"/></svg>
+    </button>
+    <button class="abtn" data-panel="outline" title="Outline  ·  Ctrl+Shift+O" aria-label="Outline">
+      <svg viewBox="0 0 24 24"><path d="M4 6h4M10 6h10M4 12h4M10 12h7M4 18h4M10 18h10"/></svg>
+    </button>
+    <button class="abtn" data-panel="problems" title="Problems  ·  Ctrl+Shift+M" aria-label="Problems">
+      <svg viewBox="0 0 24 24"><path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg>
+      <span class="abadge" id="abadge-problems" hidden>0</span>
+    </button>
+    <button class="abtn" data-panel="agent" title="Agent  ·  Ctrl+Shift+A" aria-label="Agent">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="8"/></svg>
+    </button>
+    <span class="spacer"></span>
+    <button class="abtn" id="btn-ide-appearance" title="Appearance" aria-label="Appearance">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M18.4 5.6L17 7M7 17l-1.4 1.4"/></svg>
+    </button>
+    <button class="abtn" id="btn-ide-keys" title="Keyboard shortcuts  ·  ?" aria-label="Keyboard shortcuts">
+      <svg viewBox="0 0 24 24"><rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6.5 10h.01M10 10h.01M13.5 10h.01M17 10h.01M8 14h8"/></svg>
+    </button>
+  </nav>
+
+  <!-- ── side panel ── -->
+  <aside class="side glass" id="ide-side" aria-label="Side panel">
+    <header class="side-head">
+      <span class="micro" id="side-title">Explorer</span>
+      <span class="spacer"></span>
+      <button class="ghost-btn" id="btn-side-refresh" title="Refresh" aria-label="Refresh">
+        <svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v4h-4"/></svg>
+      </button>
+      <button class="ghost-btn" id="btn-side-hide" title="Hide the panel  ·  Ctrl+B" aria-label="Hide">
+        <svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg>
+      </button>
+    </header>
+
+    <div class="side-body">
+      <section class="spanel on" id="panel-explorer">
+        <div class="etree" id="etree" role="tree" aria-label="Workspace"></div>
+      </section>
+
+      <section class="spanel" id="panel-search">
+        <div class="side-field">
+          <input type="search" id="search-input" placeholder="Find in workspace" spellcheck="false"
+                 autocomplete="off" aria-label="Find in workspace">
+          <button class="ghost-btn tiny" id="btn-search-case" title="Match case" aria-label="Match case">Aa</button>
+        </div>
+        <p class="side-note" id="search-note">Two characters or more.</p>
+        <div class="hits" id="search-hits"></div>
+      </section>
+
+      <section class="spanel" id="panel-outline">
+        <p class="side-note" id="outline-note">Open a file to see its shape.</p>
+        <div class="outline" id="outline"></div>
+      </section>
+
+      <section class="spanel" id="panel-problems">
+        <p class="side-note" id="problems-note">Nothing to report.</p>
+        <div class="problems" id="problems"></div>
+      </section>
+
+      <section class="spanel" id="panel-agent">
+        <div class="side-sub micro">Act on this file</div>
+        <div class="acts" id="acts"></div>
+        <div class="side-sub micro">Touched this session</div>
+        <div class="artifacts" id="artifacts"></div>
+        <p class="side-note" id="artifacts-note">Nothing yet.</p>
+      </section>
+    </div>
+  </aside>
+  <div class="ide-seam" id="ide-seam-l" role="separator" aria-label="Resize the side panel"></div>
+
+  <!-- ── the editor stage ── -->
+  <section class="stage" id="stage">
+    <div class="etabs" id="etabs" role="tablist" aria-label="Open files"></div>
+    <div class="ebread" id="ebread" aria-label="Breadcrumbs"></div>
+
+    <div class="stage-body">
+      <div class="editor" id="editor">
+        <div class="ed-empty" id="ed-empty">
+          <div class="ed-empty-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M9 8l-4 4 4 4M15 8l4 4-4 4"/></svg>
+          </div>
+          <h2>Nothing open</h2>
+          <ul class="ed-empty-keys">
+            <li><kbd class="hint">Ctrl</kbd><kbd class="hint">P</kbd><span>Open a file by name</span></li>
+            <li><kbd class="hint">Ctrl</kbd><kbd class="hint">Shift</kbd><kbd class="hint">F</kbd><span>Search the workspace</span></li>
+            <li><kbd class="hint">Ctrl</kbd><kbd class="hint">`</kbd><span>Terminal</span></li>
+          </ul>
+        </div>
+
+        <div class="ed" id="ed" hidden>
+          <div class="ed-gutter" id="ed-gutter" aria-hidden="true"><div class="gin" id="gin"></div></div>
+          <div class="ed-wrap" id="ed-wrap">
+            <div class="ed-lines" id="ed-lines" aria-hidden="true"><div class="lin" id="lin"></div></div>
+            <textarea id="ed-input" spellcheck="false" autocomplete="off" autocapitalize="off"
+                      autocorrect="off" wrap="off" aria-label="Editor"></textarea>
+          </div>
+          <canvas class="ed-map" id="ed-map" width="92" height="600" aria-hidden="true"></canvas>
+        </div>
+
+        <div class="findbar glass" id="findbar" hidden>
+          <div class="find-row">
+            <input type="text" id="find-input" placeholder="Find" spellcheck="false" autocomplete="off" aria-label="Find">
+            <span class="find-count mono" id="find-count">0</span>
+            <button class="ghost-btn tiny" id="btn-find-case" title="Match case">Aa</button>
+            <button class="ghost-btn tiny" id="btn-find-prev" title="Previous  ·  Shift+Enter" aria-label="Previous">
+              <svg viewBox="0 0 24 24"><path d="M6 15l6-6 6 6"/></svg>
+            </button>
+            <button class="ghost-btn tiny" id="btn-find-next" title="Next  ·  Enter" aria-label="Next">
+              <svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
+            </button>
+            <button class="ghost-btn tiny" id="btn-find-close" title="Close  ·  Esc" aria-label="Close">
+              <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
+            </button>
+          </div>
+          <div class="find-row" id="replace-row" hidden>
+            <input type="text" id="replace-input" placeholder="Replace with" spellcheck="false"
+                   autocomplete="off" aria-label="Replace with">
+            <button class="mini-btn wide" id="btn-replace-one">Replace</button>
+            <button class="mini-btn wide" id="btn-replace-all">All</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="dock-seam" id="dock-seam" role="separator" aria-label="Resize the dock"></div>
+
+      <div class="dock glass" id="dock">
+        <header class="dock-head">
+          <div class="dock-tabs" role="tablist">
+            <button class="dock-tab on" data-dock="problems" role="tab">Problems
+              <span class="dbadge" id="dbadge" hidden>0</span></button>
+            <button class="dock-tab" data-dock="output" role="tab">Output</button>
+            <button class="dock-tab" data-dock="terminal" role="tab">Terminal</button>
+          </div>
+          <span class="spacer"></span>
+          <button class="ghost-btn tiny" id="btn-dock-clear" title="Clear" aria-label="Clear">
+            <svg viewBox="0 0 24 24"><path d="M6 7h12M9 7V5h6v2M8 7l1 12h6l1-12"/></svg>
+          </button>
+          <button class="ghost-btn tiny" id="btn-dock-hide" title="Hide the dock  ·  Ctrl+J" aria-label="Hide">
+            <svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
+          </button>
+        </header>
+        <div class="dock-body">
+          <div class="dview on" id="dock-problems"></div>
+          <div class="dview" id="dock-output"></div>
+          <div class="dview" id="dock-terminal"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── mission panel ── -->
+  <div class="ide-seam" id="ide-seam-r" role="separator" aria-label="Resize the mission panel"></div>
+  <aside class="mission glass" id="mission" aria-label="Mission">
+    <header class="side-head">
+      <span class="micro">Mission</span>
+      <span class="spacer"></span>
+      <span class="pulse" id="mission-pulse" aria-hidden="true"></span>
+      <button class="ghost-btn" id="btn-mission-hide" title="Hide  ·  Ctrl+Shift+B" aria-label="Hide">
+        <svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>
+      </button>
+    </header>
+    <div class="mission-body">
+      <div class="mission-state" id="mission-state">
+        <span class="ms-dot"></span><span id="mission-label">Idle</span>
+      </div>
+      <div class="mission-ask">
+        <textarea id="mission-input" rows="3" spellcheck="false"
+                  placeholder="Ask about this file, this selection, this error…"
+                  aria-label="Ask J.A.R.V.I.S."></textarea>
+        <div class="mission-row">
+          <span class="micro dim" id="mission-scope">whole file</span>
+          <span class="spacer"></span>
+          <button class="mini-btn wide" id="btn-mission-send">Send</button>
+        </div>
+      </div>
+      <div class="side-sub micro">Activity</div>
+      <div class="feed" id="feed" role="log" aria-label="Agent activity"></div>
+    </div>
+  </aside>
+
+  <!-- ── status bar (the Code surface has its own) ── -->
+  <footer class="ide-status" id="ide-status">
+    <button class="st-item" id="st-branch" title="Workspace"><svg viewBox="0 0 24 24"><circle cx="7" cy="6" r="2.2"/><circle cx="7" cy="18" r="2.2"/><circle cx="17" cy="9" r="2.2"/><path d="M7 8.2v7.6M9.2 6.6c4 0 5.8.6 5.8 2.4"/></svg><span id="st-branch-name">workspace</span></button>
+    <button class="st-item" id="st-problems" title="Problems  ·  Ctrl+Shift+M">
+      <svg viewBox="0 0 24 24"><path d="M12 4l9 16H3z"/></svg><span id="st-problem-count">0</span>
+    </button>
+    <span class="spacer"></span>
+    <button class="st-item" id="st-position" title="Go to line  ·  Ctrl+G">Ln 1, Col 1</button>
+    <button class="st-item" id="st-indent" title="Indentation">Spaces: 4</button>
+    <button class="st-item" id="st-eol" title="Line endings">LF</button>
+    <button class="st-item" id="st-language" title="Language">Plain text</button>
+    <button class="st-item" id="st-wrap" title="Soft wrap  ·  Alt+Z">No wrap</button>
+    <span class="st-item" id="st-save"></span>
+  </footer>
+</main>
+
+<!-- ══ quick open ═══════════════════════════════════════════ -->
+<div class="palette-wrap" id="quick-wrap" hidden>
+  <div class="palette quick glass" role="dialog" aria-label="Open a file">
+    <div class="palette-field">
+      <svg viewBox="0 0 24 24" class="pf-icon"><circle cx="11" cy="11" r="6"/><path d="M15.5 15.5L20 20"/></svg>
+      <input type="text" id="quick-input" placeholder="Open a file by name" spellcheck="false"
+             autocomplete="off" aria-label="Open a file by name">
+      <kbd class="hint">Esc</kbd>
+    </div>
+    <ul id="quick-list"></ul>
+    <div class="palette-foot micro" id="quick-foot"></div>
+  </div>
+</div>
 
 <!-- ══ status bar ═══════════════════════════════════════════════════════ -->
 <footer class="statusbar">
@@ -425,6 +669,8 @@
 <div class="toasts" id="toasts" aria-live="polite"></div>
 
 <script>window.JARVIS_BOOT = __JARVIS_BOOT__;</script>
+<script src="/static/lang.js?token=__JARVIS_TOKEN__"></script>
 <script src="/static/app.js?token=__JARVIS_TOKEN__"></script>
+<script src="/static/ide.js?token=__JARVIS_TOKEN__"></script>
 </body>
 </html>

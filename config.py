@@ -174,6 +174,14 @@ class Settings(BaseSettings):
     #: token boundary as everything else the window can reach. Set false to
     #: remove the pane and refuse the route outright.
     DESKTOP_SHELL_ENABLED: bool = True
+    #: Whether the editor may write. The code surface reads regardless; this
+    #: decides only whether Ctrl+S reaches the disk. Writes are confined to
+    #: WORKSPACE_ROOT by the same resolve-then-compare boundary the reader uses,
+    #: so switching it on widens what the window may change, never where.
+    DESKTOP_EDIT_ENABLED: bool = True
+    #: Ceiling on one editor save. Larger than the read cap on purpose: a file
+    #: you opened and grew must still be saveable.
+    DESKTOP_EDIT_MAX_BYTES: int = 2_000_000
 
     # -- Tools --------------------------------------------------------------------
     WORKSPACE_ROOT: Path = PROJECT_ROOT

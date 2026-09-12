@@ -44,6 +44,7 @@ checked too, which is what closes the DNS-rebinding version of the same attack.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import mimetypes
@@ -540,21 +541,84 @@ HIDDEN_DIRS = {
     ".jarvis_cache", ".DS_Store",
 }
 
-#: Extension to language name, for the code viewer's highlighter and its header.
+#: Extension to language name, for the editor's highlighter, its header and the
+#: comment style Ctrl+/ uses. Every name here has a definition in the front end's
+#: language table; adding one without the other colours a file as plain text.
 LANGUAGES: dict[str, str] = {
-    ".py": "python", ".pyi": "python", ".js": "javascript", ".mjs": "javascript",
-    ".ts": "typescript", ".tsx": "typescript", ".jsx": "javascript",
-    ".json": "json", ".html": "html", ".htm": "html", ".css": "css",
-    ".scss": "css", ".md": "markdown", ".markdown": "markdown", ".rs": "rust",
-    ".go": "go", ".c": "c", ".h": "c", ".cpp": "cpp", ".cc": "cpp", ".hpp": "cpp",
-    ".java": "java", ".kt": "kotlin", ".swift": "swift", ".rb": "ruby",
-    ".php": "php", ".sh": "bash", ".bash": "bash", ".zsh": "bash", ".fish": "bash",
-    ".ps1": "powershell", ".bat": "batch", ".sql": "sql", ".yml": "yaml",
-    ".yaml": "yaml", ".toml": "toml", ".ini": "ini", ".cfg": "ini", ".env": "ini",
-    ".xml": "xml", ".svg": "xml", ".lua": "lua", ".r": "r", ".jl": "julia",
-    ".ex": "elixir", ".exs": "elixir", ".hs": "haskell", ".scala": "scala",
-    ".dart": "dart", ".vim": "vim", ".txt": "text", ".log": "text", ".cfg": "ini",
+    ".py": "python", ".pyi": "python", ".pyw": "python",
+    ".js": "javascript", ".mjs": "javascript", ".cjs": "javascript", ".jsx": "javascript",
+    ".ts": "typescript", ".tsx": "typescript", ".mts": "typescript", ".cts": "typescript",
+    ".json": "json", ".jsonc": "json", ".json5": "json",
+    ".html": "html", ".htm": "html", ".vue": "html", ".svelte": "html",
+    ".css": "css", ".scss": "css", ".sass": "css", ".less": "css",
+    ".md": "markdown", ".markdown": "markdown", ".mdx": "markdown",
+    ".rs": "rust", ".go": "go",
+    ".c": "c", ".h": "c",
+    ".cpp": "cpp", ".cc": "cpp", ".cxx": "cpp", ".hpp": "cpp", ".hh": "cpp", ".hxx": "cpp",
+    ".cs": "csharp", ".java": "java", ".kt": "kotlin", ".kts": "kotlin",
+    ".swift": "swift", ".rb": "ruby", ".rake": "ruby", ".gemspec": "ruby",
+    ".php": "php", ".pl": "perl", ".pm": "perl",
+    ".sh": "bash", ".bash": "bash", ".zsh": "bash", ".fish": "bash", ".ksh": "bash",
+    ".ps1": "powershell", ".psm1": "powershell", ".psd1": "powershell",
+    ".bat": "batch", ".cmd": "batch",
+    ".sql": "sql", ".yml": "yaml", ".yaml": "yaml",
+    ".toml": "toml", ".ini": "ini", ".cfg": "ini", ".conf": "ini", ".env": "ini",
+    ".properties": "ini",
+    ".xml": "xml", ".svg": "xml", ".xsd": "xml", ".plist": "xml",
+    ".lua": "lua", ".r": "r", ".jl": "julia",
+    ".ex": "elixir", ".exs": "elixir", ".erl": "erlang", ".hrl": "erlang",
+    ".hs": "haskell", ".lhs": "haskell", ".scala": "scala", ".sc": "scala",
+    ".dart": "dart", ".zig": "zig", ".nim": "nim", ".v": "vlang",
+    ".clj": "clojure", ".cljs": "clojure", ".edn": "clojure",
+    ".ml": "ocaml", ".mli": "ocaml", ".fs": "fsharp", ".fsx": "fsharp",
+    ".groovy": "groovy", ".gradle": "groovy",
+    ".sol": "solidity", ".tf": "terraform", ".tfvars": "terraform",
+    ".proto": "protobuf", ".graphql": "graphql", ".gql": "graphql",
+    ".vim": "vim", ".el": "lisp", ".lisp": "lisp", ".scm": "lisp",
+    ".asm": "asm", ".s": "asm",
+    ".tex": "latex", ".diff": "diff", ".patch": "diff",
+    ".txt": "text", ".log": "text", ".csv": "text", ".rst": "text",
 }
+
+#: Files a language claims by name rather than by extension. A Dockerfile has no
+#: suffix at all, and a Makefile's tab-significant grammar is nothing like text.
+FILENAMES: dict[str, str] = {
+    "dockerfile": "dockerfile", "containerfile": "dockerfile",
+    "makefile": "makefile", "gnumakefile": "makefile", "justfile": "makefile",
+    "cmakelists.txt": "cmake", "rakefile": "ruby", "gemfile": "ruby",
+    "vagrantfile": "ruby", "brewfile": "ruby",
+    ".gitignore": "ini", ".dockerignore": "ini", ".editorconfig": "ini",
+    ".bashrc": "bash", ".zshrc": "bash", ".profile": "bash",
+    ".vimrc": "vim", "requirements.txt": "ini",
+}
+
+
+def language_for(path: Path, text: str = "") -> str:
+    """The language a file should be coloured as: name first, then suffix, then shebang."""
+    by_name = FILENAMES.get(path.name.lower())
+    if by_name:
+        return by_name
+    by_suffix = LANGUAGES.get(path.suffix.lower())
+    if by_suffix:
+        return by_suffix
+    return _shebang_language(text) if text else "text"
+
+
+#: How many paths the fuzzy opener is given. A ceiling, not a target.
+MAX_INDEX_FILES = 6_000
+#: How many matching lines one workspace search returns before it stops walking.
+MAX_SEARCH_HITS = 500
+
+
+def _digest(data: bytes) -> str:
+    """A short content fingerprint, used to notice a file changing under the editor.
+
+    Not a security boundary — nothing here defends against a deliberate
+    collision — so the first eighty bits of a SHA-256 are plenty and keep the
+    payload small.
+    """
+    return hashlib.sha256(data).hexdigest()[:20]
+
 
 #: Read no more than this from one file. The viewer says when it truncated.
 MAX_FILE_BYTES = 400_000
@@ -583,7 +647,12 @@ def _shebang_language(text: str) -> str:
 
 
 class Workspace:
-    """Read-only, sandboxed access to the operator's working directory."""
+    """Sandboxed access to the operator's working directory.
+
+    Reading is always allowed; writing only when ``DESKTOP_EDIT_ENABLED``
+    says so. Every path, either way, goes through :meth:`resolve` first, so
+    there is exactly one place where the boundary is decided.
+    """
 
     def __init__(self, root: Path | None = None) -> None:
         self._root = root
@@ -644,7 +713,7 @@ class Workspace:
                     "path": str(child.relative_to(root)).replace("\\", "/"),
                     "kind": "dir" if is_dir else "file",
                     "size": size,
-                    "language": LANGUAGES.get(child.suffix.lower(), "") if not is_dir else "",
+                    "language": "" if is_dir else language_for(child),
                 }
             )
 
@@ -689,13 +758,162 @@ class Workspace:
         return {
             "path": str(target.relative_to(self.root)).replace("\\", "/"),
             "name": target.name,
-            "language": LANGUAGES.get(target.suffix.lower()) or _shebang_language(text),
+            "language": language_for(target, text),
             "content": text,
             "lines": text.count("\n") + 1,
             "size": len(raw),
             "truncated": truncated,
             "binary": False,
+            # What the editor sends back on save so a file rewritten underneath
+            # it is caught instead of clobbered.
+            "digest": _digest(raw),
+            "editable": bool(getattr(settings, "DESKTOP_EDIT_ENABLED", True)) and not truncated,
         }
+
+    # -- writing --------------------------------------------------------------------
+    def write(self, relative: str, content: str, *, expect: str | None = None) -> dict[str, Any]:
+        """Save the editor's buffer over a file inside the workspace.
+
+        ``expect`` is the digest the editor last read. When it is supplied and no
+        longer matches, the save is refused rather than silently discarding a
+        change something else made to the file in the meantime — an agent turn
+        rewriting the very file you have open is the ordinary case here, not an
+        exotic one.
+        """
+        if not bool(getattr(settings, "DESKTOP_EDIT_ENABLED", True)):
+            return {"ok": False, "error": "saving is switched off"}
+
+        target = self.resolve(relative)
+        if target is None:
+            return {"ok": False, "error": "that path is outside the workspace"}
+        if target.is_dir():
+            return {"ok": False, "error": "that is a directory"}
+
+        data = content.encode("utf-8")
+        cap = int(getattr(settings, "DESKTOP_EDIT_MAX_BYTES", 2_000_000))
+        if len(data) > cap:
+            return {"ok": False, "error": f"that file is larger than the {cap:,}-byte limit"}
+
+        if expect is not None and target.exists():
+            try:
+                current = _digest(target.read_bytes()[:MAX_FILE_BYTES])
+            except OSError:
+                current = None
+            if current is not None and current != expect:
+                return {"ok": False, "stale": True,
+                        "error": "that file changed on disk since you opened it"}
+
+        # Written beside the target and moved into place, so a failure halfway
+        # through leaves the original file intact rather than a truncated one.
+        temporary = target.with_name(target.name + ".jarvis-save")
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            temporary.write_bytes(data)
+            os.replace(temporary, target)
+        except OSError as error:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return {"ok": False, "error": f"that file could not be written: {error}"}
+
+        LOG.info("editor saved %s (%d bytes)", relative, len(data))
+        return {
+            "ok": True,
+            "path": str(target.relative_to(self.root)).replace("\\", "/"),
+            "size": len(data),
+            "lines": content.count("\n") + 1,
+            "digest": _digest(data),
+        }
+
+    # -- finding --------------------------------------------------------------------
+    def index(self, limit: int = MAX_INDEX_FILES) -> dict[str, Any]:
+        """Every text file under the root, for the fuzzy opener.
+
+        Walked once and capped. The cap is a real ceiling, not a suggestion: an
+        operator whose workspace is their home directory should get a slow-ish
+        list, not a hung window.
+        """
+        root = self.root
+        paths: list[str] = []
+        truncated = False
+        for folder, folders, files in os.walk(root):
+            folders[:] = sorted(name for name in folders if name not in HIDDEN_DIRS
+                                and not name.startswith("."))
+            for name in sorted(files):
+                if name.endswith((".pyc", ".pyo", ".so", ".dylib", ".dll")):
+                    continue
+                whole = Path(folder) / name
+                try:
+                    relative = str(whole.relative_to(root)).replace("\\", "/")
+                except ValueError:
+                    continue
+                paths.append(relative)
+                if len(paths) >= limit:
+                    truncated = True
+                    break
+            if truncated:
+                break
+        return {"root": root.name, "paths": paths, "truncated": truncated}
+
+    def search(self, needle: str, *, limit: int = MAX_SEARCH_HITS,
+               case: bool = False) -> dict[str, Any]:
+        """Literal substring search across the workspace, grouped by file."""
+        needle = needle or ""
+        if len(needle) < 2:
+            return {"query": needle, "files": [], "hits": 0,
+                    "error": "search for at least two characters"}
+
+        root = self.root
+        probe = needle if case else needle.lower()
+        results: list[dict[str, Any]] = []
+        hits = 0
+        truncated = False
+
+        for folder, folders, files in os.walk(root):
+            folders[:] = sorted(name for name in folders if name not in HIDDEN_DIRS
+                                and not name.startswith("."))
+            for name in sorted(files):
+                whole = Path(folder) / name
+                if language_for(whole) == "text" and whole.suffix.lower() not in ("", ".txt", ".md"):
+                    continue
+                try:
+                    raw = whole.read_bytes()[:MAX_FILE_BYTES]
+                except OSError:
+                    continue
+                if b"\x00" in raw[:4096]:
+                    continue
+                try:
+                    text = raw.decode("utf-8")
+                except UnicodeDecodeError:
+                    continue
+                if probe not in (text if case else text.lower()):
+                    continue
+
+                matches: list[dict[str, Any]] = []
+                for number, line in enumerate(text.split("\n"), 1):
+                    haystack = line if case else line.lower()
+                    column = haystack.find(probe)
+                    if column == -1:
+                        continue
+                    matches.append({"line": number, "column": column,
+                                    "text": line[:400].rstrip()})
+                    hits += 1
+                    if len(matches) >= 40 or hits >= limit:
+                        break
+                if matches:
+                    results.append({
+                        "path": str(whole.relative_to(root)).replace("\\", "/"),
+                        "name": whole.name,
+                        "matches": matches,
+                    })
+                if hits >= limit:
+                    truncated = True
+                    break
+            if truncated:
+                break
+
+        return {"query": needle, "files": results, "hits": hits, "truncated": truncated}
 
 
 # ══════════════════════════════════════════════════════════════════════════════════════
@@ -1067,6 +1285,14 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(self.app.workspace.listing(_query(self.path).get("path", [""])[0]))
         elif route == "/api/file":
             self._json(self.app.workspace.read(_query(self.path).get("path", [""])[0]))
+        elif route == "/api/index":
+            self._json(self.app.workspace.index())
+        elif route == "/api/search":
+            query = _query(self.path)
+            self._json(self.app.workspace.search(
+                query.get("q", [""])[0],
+                case=query.get("case", ["0"])[0] in ("1", "true"),
+            ))
         else:
             self._json({"error": "no such route"}, 404)
 
@@ -1097,6 +1323,12 @@ class _Handler(BaseHTTPRequestHandler):
             self._json({"ok": resolved})
         elif route == "/api/shell":
             self._json(self._shell_action(body))
+        elif route == "/api/save":
+            self._json(self.app.workspace.write(
+                str(body.get("path") or ""),
+                str(body.get("content") or ""),
+                expect=body.get("digest") or None,
+            ))
         elif route == "/api/quit":
             self._json({"ok": True})
             self.app.request_stop()
@@ -1530,6 +1762,9 @@ class DesktopApp:
             # So the shell prompt can shorten a path to ~ the way a shell does.
             "home": str(Path.home()),
             "shell": self.shell_payload(),
+            # The editor greys Ctrl+S out rather than offering a save that the
+            # server would only refuse.
+            "canEdit": bool(getattr(settings, "DESKTOP_EDIT_ENABLED", True)),
         }
         try:
             payload.update(self.backend.snapshot())
@@ -1583,10 +1818,18 @@ class DesktopApp:
 # ══════════════════════════════════════════════════════════════════════════════════════
 # Entry points
 # ══════════════════════════════════════════════════════════════════════════════════════
+#: Every file the page needs. Listed rather than globbed so a half-copied
+#: install fails at startup with the name of what is missing, instead of opening
+#: a window that silently has no editor in it.
+FRONT_END_FILES: tuple[str, ...] = (
+    "index.html", "app.css", "app.js", "ide.css", "ide.js", "lang.js",
+)
+
+
 def available() -> tuple[bool, str]:
     """Whether the desktop app can run here, and why not when it cannot."""
     missing = [
-        name for name in ("index.html", "app.css", "app.js")
+        name for name in FRONT_END_FILES
         if not (WEB_ROOT / name).is_file()
     ]
     if missing:
