@@ -1,7 +1,7 @@
 # J.A.R.V.I.S.
 
 **Just A Rather Very Intelligent System** — a modular workshop AI that runs locally on
-Ollama, speaks with a British neural voice, watches your hardware without being asked,
+Ollama, (speaks with a British neural voice), watches your hardware without being asked,
 writes and executes code in every language your machine can compile, and answers in six
 languages including Hindi, Bengali, Telugu, Marathi and Tamil.
 
