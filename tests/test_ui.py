@@ -481,3 +481,60 @@ def test_clearing_the_mission_panel_does_not_destroy_its_prompt(window):
         assert page.evaluate("!!document.querySelector('#thread .thread-empty:not([hidden])')")
     page.evaluate("Ide.surface('chat')")
     page.wait_for_timeout(250)
+
+
+def test_the_call_word_lights_the_whole_window_blue(window):
+    """"Hello J.A.R.V.I.S." and the room changes colour.
+
+    Blue whatever accent the operator chose, which is the one deliberate
+    exception to deriving every colour from their seed: a signal meaning "he is
+    listening to the room" has to read the same way every time, and it cannot if
+    it is whatever colour somebody picked last week.
+    """
+    page, app, errors = window
+    field = "getComputedStyle(document.getElementById('wake-field')).opacity"
+    assert float(page.evaluate(field)) < 0.05, "the field is up before anything happened"
+
+    app.hud.set_state("listening")
+    app.hud.wake("namaste jarvis")
+    page.wait_for_timeout(800)
+    assert page.evaluate("document.body.classList.contains('woken')")
+    assert float(page.evaluate(field)) > 0.9
+
+    # Really blue, not the accent. color-mix resolves to decimal components, so
+    # these are floats rather than the 0-255 integers `rgb()` would give.
+    red, green, blue = page.evaluate("""() => {
+      const probe = document.createElement('div');
+      probe.style.color = getComputedStyle(document.documentElement)
+        .getPropertyValue('--wake-blue');
+      document.body.appendChild(probe);
+      const colour = getComputedStyle(probe).color;
+      probe.remove();
+      return (colour.match(/[\\d.]+/g) || []).map(Number).slice(0, 3);
+    }""")
+    assert blue > red and blue > green, (red, green, blue)
+
+    # The edge breathes with the level of your voice rather than glowing flatly.
+    app.hud.set_amplitude(0.85)
+    page.wait_for_timeout(400)
+    level = float(page.evaluate(
+        "getComputedStyle(document.documentElement).getPropertyValue('--voice-level') || 0"))
+    assert level > 0.2, level
+
+    app.hud.set_state("idle")
+    app.hud.set_amplitude(0.0)
+    page.wait_for_timeout(800)
+    assert float(page.evaluate(field)) < 0.05, "it should go back to normal"
+
+
+def test_the_microphone_button_no_longer_types_into_the_composer(window):
+    """It used to send the word "talk" as a chat message, which is not what a
+    microphone button is."""
+    page, app, errors = window
+    page.evaluate("document.getElementById('input').value = ''")
+    page.click("#btn-mic")
+    page.wait_for_timeout(500)
+    assert page.evaluate("document.getElementById('input').value") == ""
+    # An attached window does not own the terminal session's microphone, and
+    # says so rather than pretending to switch it on.
+    assert "microphone" in page.inner_text("#toasts").lower()

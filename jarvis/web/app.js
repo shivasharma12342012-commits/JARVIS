@@ -735,10 +735,14 @@ const HANDLERS = {
     ]);
     Logs.add(ready ? 'info' : 'warn', d.text);
   },
-  voice_status: (d) => Logs.add('info', d.text),
+  voice_status: (d) => { Logs.add('info', d.text); Voice.status(d.text); },
   protocol: (d) => { if (d.name) { toast('Protocol: ' + d.name); Logs.add('info', 'protocol: ' + d.name); } },
   warm: () => {},
-  amplitude: () => {},
+  wake: (d) => {
+    Voice.woke();
+    Logs.add('info', 'woken' + (d && d.phrase ? ': ' + d.phrase : ''));
+  },
+  amplitude: (d) => Voice.hear(d.value),
   theme: (d) => { applyVariables(d.variables); Studio.sync(d.theme); },
   ask: (d) => Ask.card(d),
   ask_done: (d) => Ask.close(d.token),
@@ -1820,6 +1824,255 @@ function toast(text) {
 }
 
 /* =============================================================================
+   Voice
+
+   "Hello J.A.R.V.I.S.", "Namaste J.A.R.V.I.S.", "Pi lagu J.A.R.V.I.S." — and the
+   whole window turns blue. The field itself is CSS; this decides when it is up,
+   and feeds it the level of your voice so the edge breathes rather than glows
+   flatly.
+   ============================================================================= */
+const Voice = {
+  info: {},
+  level: 0,
+
+  init() {
+    this.info = BOOT.voice || {};
+    this.mic = $('btn-mic');
+    this.mic.onclick = () => this.toggle();
+    $('btn-mute').onclick = () => this.mute(!this.info.muted);
+    this.render();
+  },
+
+  render() {
+    const info = this.info || {};
+    const listening = !!info.listening;
+    this.mic.classList.toggle('listening', listening);
+    this.mic.setAttribute('aria-pressed', listening ? 'true' : 'false');
+
+    if (!info.owned) {
+      this.mic.title = 'The terminal session owns the microphone';
+    } else if (!info.available) {
+      this.mic.title = 'No microphone — ' + (info.status || 'voice is unavailable');
+    } else if (listening) {
+      const phrases = (info.phrases || []).slice(0, 3)
+        .map((phrase) => '\u201c' + phrase + '\u201d').join(', ');
+      this.mic.title = 'Listening' + (phrases ? ' for ' + phrases : '') + ' — click to stop';
+    } else {
+      this.mic.title = 'Listen for the call word';
+    }
+    $('btn-mute').classList.toggle('on', !!info.muted);
+    $('btn-mute').title = info.muted ? 'Speech is muted' : 'Mute what he says';
+  },
+
+  async toggle() {
+    if (!this.info.owned) {
+      toast('The terminal session owns the microphone.');
+      return;
+    }
+    const wanted = !this.info.listening;
+    let result;
+    try { result = await api('/api/voice', { listen: wanted }); }
+    catch (err) { toast('Could not reach the voice subsystem.'); return; }
+    if (!result || result.ok === false) {
+      toast((result && result.error) || 'The microphone would not open.');
+    }
+    if (result) { this.info = Object.assign({}, this.info, result); this.render(); }
+    if (this.info.listening) toast('Listening. Say "' + ((this.info.phrases || [])[0] || 'hello jarvis') + '".');
+  },
+
+  async mute(wanted) {
+    let result;
+    try { result = await api('/api/voice', { muted: !!wanted }); }
+    catch (err) { toast('Could not reach the voice subsystem.'); return; }
+    if (result && result.ok === false) {
+      // No voice of its own: fall back to the live keyword, which the terminal
+      // session behind this window does understand.
+      Composer.send(wanted ? 'quiet' : 'talk');
+      return;
+    }
+    if (result) { this.info = Object.assign({}, this.info, result); this.render(); }
+  },
+
+  /* The moment of waking. One beat of a brighter field, then back to the steady
+     listening glow underneath it. */
+  woke() {
+    document.body.classList.remove('woken');
+    void document.body.offsetWidth;          // restart the animation
+    document.body.classList.add('woken');
+    clearTimeout(this._settle);
+    this._settle = setTimeout(() => document.body.classList.remove('woken'), 1100);
+  },
+
+  /* Amplitude arrives many times a second. Writing a custom property is cheap;
+     doing anything that touches layout at that rate is not. */
+  hear(value) {
+    const level = clamp(Number(value) || 0, 0, 1);
+    // Eased towards the new reading rather than snapped to it, so a consonant
+    // does not strobe the whole window.
+    this.level = this.level + (level - this.level) * 0.35;
+    if (this._frame) return;
+    this._frame = requestAnimationFrame(() => {
+      this._frame = 0;
+      document.documentElement.style.setProperty('--voice-level', this.level.toFixed(3));
+    });
+  },
+
+  status(text) {
+    this.info = Object.assign({}, this.info, { status: text });
+    this.render();
+  },
+};
+
+/* =============================================================================
+   Security
+
+   The whole lock, in one panel. Setting a password locks the window; removing
+   it unlocks it. There is no mode to choose, no file to edit and no command to
+   run, because the people who will use this are not the people who wrote it.
+   ============================================================================= */
+const Security = {
+  state: {},
+
+  init() {
+    this.state = BOOT.auth || {};
+    $('btn-set-password').onclick = () => this.form(auth().passwordSet ? 'change' : 'set');
+    $('btn-remove-password').onclick = () => this.form('remove');
+    $('btn-lock-cancel').onclick = () => this.hideForm();
+    $('btn-lock-now').onclick = () => this.lockNow();
+    $('lock-form').addEventListener('submit', (event) => { event.preventDefault(); this.save(); });
+    $('btn-google-save').onclick = () => this.saveGoogle();
+    $('btn-google-clear').onclick = () => this.saveGoogle(true);
+    this.render();
+
+    function auth() { return Security.state || {}; }
+  },
+
+  render() {
+    const state = this.state || {};
+    const locked = !!state.required;
+    const set = !!state.passwordSet;
+
+    $('lock-state').classList.toggle('on', locked);
+    $('lock-say').textContent = locked
+      ? (set && state.googleConfigured
+          ? 'Locked. Password or Google.'
+          : set ? 'Locked. It asks for your password.' : 'Locked. It asks for Google.')
+      : 'This window is not locked. Anyone who opens it is in.';
+
+    $('lock-managed').hidden = !state.managed;
+    $('btn-set-password').textContent = set ? 'Change password' : 'Set a password';
+    $('btn-set-password').hidden = !!state.managed && !locked;
+    $('btn-remove-password').hidden = !set;
+    $('btn-lock-now').hidden = !locked;
+
+    const client = $('google-client');
+    if (state.googleManaged) {
+      client.value = 'set in your .env';
+      client.disabled = true;
+    }
+    $('btn-google-clear').hidden = !state.googleConfigured || !!state.googleManaged;
+    $('btn-google-save').hidden = !!state.googleManaged;
+  },
+
+  /* One form, three jobs: set the first password, change an existing one, or
+     take it off. Which fields show is the only difference between them. */
+  form(kind) {
+    this.kind = kind;
+    const removing = kind === 'remove';
+    $('lock-form').hidden = false;
+    $('current-wrap').hidden = !this.state.passwordSet;
+    $('new-wrap').hidden = removing;
+    $('again-wrap').hidden = removing;
+    $('new-label').textContent = this.state.passwordSet ? 'New password or PIN' : 'Password or PIN';
+    $('btn-lock-save').textContent = removing ? 'Remove the password' : 'Save';
+    this.note(removing
+      ? 'The window will stop asking for anything. Anyone who opens it is in.'
+      : 'At least ' + (this.state.minSecret || 4) + ' characters. It never leaves this ' +
+        'computer, and it is kept as a hash \u2014 nothing can read it back.');
+    // After the panel has laid out, or the focus lands on a hidden field.
+    setTimeout(() => {
+      (this.state.passwordSet ? $('lock-current') : $('lock-new')).focus();
+    }, 30);
+  },
+
+  hideForm() {
+    $('lock-form').hidden = true;
+    ['lock-current', 'lock-new', 'lock-again'].forEach((id) => { $(id).value = ''; });
+    this.note('');
+  },
+
+  note(text, tone) {
+    const node = $('lock-note');
+    node.textContent = text;
+    node.hidden = !text;
+    node.className = 'lock-note' + (tone ? ' ' + tone : '');
+  },
+
+  async save() {
+    const removing = this.kind === 'remove';
+    const wanted = removing ? '' : $('lock-new').value;
+    if (!removing) {
+      if (wanted.length < (this.state.minSecret || 4)) {
+        this.note('That needs to be at least ' + (this.state.minSecret || 4) + ' characters.', 'bad');
+        return;
+      }
+      if (wanted !== $('lock-again').value) {
+        this.note('Those two do not match.', 'bad');
+        $('lock-again').value = '';
+        $('lock-again').focus();
+        return;
+      }
+    }
+    let result;
+    try {
+      result = await api('/api/auth/change',
+                         { current: $('lock-current').value, password: wanted });
+    } catch (err) {
+      this.note('Could not reach J.A.R.V.I.S.: ' + err.message, 'bad');
+      return;
+    }
+    if (!result || !result.ok) { this.note((result && result.error) || 'that did not work', 'bad'); return; }
+
+    this.state = result.auth || this.state;
+    this.hideForm();
+    this.render();
+    // Said out loud, because the consequence is the whole point of the panel.
+    toast(removing ? 'The window is no longer locked.'
+                   : (result.auth && result.auth.required ? 'The window is locked now.'
+                                                          : 'Password saved.'));
+  },
+
+  async saveGoogle(clearing) {
+    const client = clearing ? '' : $('google-client').value.trim();
+    let result;
+    try {
+      result = await api('/api/auth/google/config', { clientId: client });
+    } catch (err) {
+      this.gnote('Could not reach J.A.R.V.I.S.: ' + err.message, 'bad');
+      return;
+    }
+    if (!result || !result.ok) { this.gnote((result && result.error) || 'that did not work', 'bad'); return; }
+    this.state = result.auth || this.state;
+    this.render();
+    this.gnote(client ? 'Saved. The lock screen will offer Google next time.'
+                      : 'Removed.', 'good');
+    if (!client) $('google-client').value = '';
+  },
+
+  gnote(text, tone) {
+    const node = $('google-note');
+    node.textContent = text;
+    node.hidden = !text;
+    node.className = 'lock-note' + (tone ? ' ' + tone : '');
+  },
+
+  async lockNow() {
+    try { await api('/api/auth/lock', {}); } catch (err) { /* going anyway */ }
+    location.replace('/');
+  },
+};
+
+/* =============================================================================
    Sessions
 
    One agent core, several surfaces: a "new session" clears the shared memory
@@ -2069,6 +2322,8 @@ function boot() {
   Tree.init();
   Sessions.init();
   Keys.init();
+  Security.init();
+  Voice.init();
   setState(BOOT.state || 'idle');
 
   // Only shown when there is something to sign out of. With the lock off the
@@ -2096,8 +2351,6 @@ function boot() {
   // anybody pressed it hoping for.
   $('btn-attach').onclick = () => { Ide.surface('code'); setTimeout(() => Ide.quick.show(), 60); };
   $('model-chip').onclick = () => { Rail.show('system'); };
-  $('btn-mic').onclick = () => Composer.send('talk');
-  $('btn-mute').onclick = () => Composer.send('quiet');
   document.querySelectorAll('.nav-item[data-rail]').forEach((item) => {
     item.onclick = () => Rail.show(item.dataset.rail);
   });

@@ -133,6 +133,109 @@ kbd, .hint {
   background: radial-gradient(circle, var(--secondary) 0%, transparent 70%);
 }
 
+/* ── the wake field ───────────────────────────────────────────
+   "Hello J.A.R.V.I.S." and the room changes colour.
+
+   Three layers: a wash over everything, a ring that expands once from the middle
+   on the moment of waking, and an edge that stays lit for as long as he is
+   listening and breathes with the level of your voice.
+
+   Blue, and blue whatever accent the operator chose. Everything else in this
+   application is derived from their one colour; this is the exception, and it is
+   deliberate — a signal that means "he is listening to the room" has to read the
+   same way every time, and it cannot if it is whatever colour somebody picked
+   last week. The accent is mixed in at a fifth so it still belongs to the theme.
+   ───────────────────────────────────────────────────────────────── */
+:root {
+  --wake: #38bdf8;
+  /* Kept close to the theme without being at its mercy. */
+  --wake-blue: color-mix(in srgb, var(--wake) 80%, var(--accent) 20%);
+  /* Written from the amplitude events: 0 in a silent room, 1 when you speak. */
+  --voice-level: 0;
+}
+.wake-field {
+  position: fixed; inset: 0; z-index: 60; pointer-events: none;
+  opacity: 0; transition: opacity .5s var(--ease);
+}
+.wake-field > span { position: absolute; display: block; }
+
+/* The wash. Strongest at the edges, clear in the middle, so the window is lit
+   rather than covered — you can still read what is under it. */
+.wake-wash {
+  inset: 0;
+  /* Unmistakable from across a room, and still readable underneath. The centre
+     keeps a little colour rather than none: a ring of blue around a normal grey
+     window reads as a notification, and the whole room changing reads as him
+     waking up, which is the thing being said. */
+  background: radial-gradient(120% 96% at 50% 48%,
+    color-mix(in srgb, var(--wake-blue) 7%, transparent) 0%,
+    color-mix(in srgb, var(--wake-blue) 20%, transparent) 52%,
+    color-mix(in srgb, var(--wake-blue) 40%, transparent) 82%,
+    color-mix(in srgb, var(--wake-blue) 62%, transparent) 100%);
+}
+
+/* The edge: a lit border that breathes with your voice. */
+.wake-edge {
+  inset: 0;
+  box-shadow:
+    inset 0 0 0 2px color-mix(in srgb, var(--wake-blue) 80%, transparent),
+    inset 0 0 calc(50px + 90px * var(--voice-level)) color-mix(in srgb, var(--wake-blue) 60%, transparent);
+  transition: box-shadow .12s linear;
+}
+
+/* The ring: one expanding circle at the instant of waking, then gone. */
+.wake-ring {
+  left: 50%; top: 50%; width: 12px; height: 12px; margin: -6px 0 0 -6px;
+  border-radius: 50%; opacity: 0;
+  border: 2px solid color-mix(in srgb, var(--wake-blue) 70%, transparent);
+}
+
+/* Listening: the field is up and stays up. */
+body[data-state="listening"] .wake-field { opacity: 1; }
+/* Woken: a brighter beat over the top of it, for one second. */
+body.woken .wake-field { opacity: 1; }
+body.woken .wake-wash { animation: wake-flash 1s var(--ease); }
+body.woken .wake-ring { animation: wake-ring 1s cubic-bezier(.16, .84, .3, 1); }
+
+/* Speaking back: the same field, warmer and calmer, so the two halves of a
+   conversation do not look identical. */
+body[data-state="speaking"] .wake-field { opacity: .72; }
+body[data-state="speaking"] .wake-edge {
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--ok) 40%, transparent),
+    inset 0 0 calc(20px + 40px * var(--voice-level)) color-mix(in srgb, var(--ok) 30%, transparent);
+}
+
+@keyframes wake-flash {
+  0%   { opacity: 0; }
+  18%  { opacity: 1.6; }
+  100% { opacity: 1; }
+}
+@keyframes wake-ring {
+  0%   { opacity: .9; transform: scale(1); }
+  100% { opacity: 0; transform: scale(92); }
+}
+
+/* The microphone control, when there is a microphone to control. */
+#btn-mic.listening {
+  color: var(--wake-blue);
+  background: color-mix(in srgb, var(--wake-blue) 16%, transparent);
+}
+#btn-mic.listening::after {
+  content: ""; position: absolute; inset: -3px; border-radius: inherit;
+  border: 1px solid color-mix(in srgb, var(--wake-blue) 45%, transparent);
+  animation: mic-breathe 2s ease-in-out infinite;
+}
+#btn-mic { position: relative; }
+@keyframes mic-breathe { 0%, 100% { opacity: .8; } 50% { opacity: .25; } }
+
+@media (prefers-reduced-motion: reduce) {
+  /* The colour still says it; nothing has to move for that. */
+  .wake-ring { display: none; }
+  .wake-wash, #btn-mic.listening::after { animation: none !important; }
+  .wake-field { transition: none; }
+}
+
 /* ── title bar ────────────────────────────────────────────────────────────── */
 .titlebar {
   position: relative; z-index: 30; flex: none;
@@ -864,6 +967,60 @@ input[type="range"]::-moz-range-thumb {
   background: linear-gradient(transparent, rgba(0,0,0,.6));
   color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+
+/* ── the Security panel ───────────────────────────────────────
+   Setting a password locks the window; removing it unlocks it. Nobody should
+   have to open a terminal or edit a dotfile to reach either. */
+.lock-state {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 10px;
+  padding: 8px 10px; border-radius: var(--radius-sm);
+  border: 1px solid var(--line); background: var(--surface-2);
+  font-size: 12px; color: var(--text-dim);
+}
+.lock-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--text-faint); }
+.lock-state.on .lock-dot { background: var(--ok); }
+.lock-state.on { color: var(--text); }
+
+.lock-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.lock-row .mini-btn.wide.primary {
+  background: var(--accent); color: var(--on-accent); border-color: transparent;
+}
+.lock-row .mini-btn.wide.primary:hover { filter: brightness(1.08); }
+
+.lock-form { margin: 10px 0 4px; display: grid; gap: 8px; }
+.lock-field { display: grid; gap: 4px; }
+.lock-field > span {
+  font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--text-faint);
+}
+.lock-field input {
+  height: 30px; padding: 0 9px; border-radius: var(--radius-sm);
+  border: 1px solid var(--line); background: var(--bg-deep); color: var(--text);
+  font: 400 13px var(--font-ui); outline: none;
+  transition: border-color var(--fast) var(--ease), box-shadow var(--fast) var(--ease);
+}
+.lock-field input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.lock-note { margin: 0; font-size: 11.5px; line-height: 1.5; color: var(--text-dim); }
+.lock-note.bad { color: var(--danger); }
+.lock-note.good { color: var(--ok); }
+
+.lock-more { margin-top: 14px; }
+.lock-more summary {
+  cursor: pointer; font-size: 12px; color: var(--text-dim); padding: 4px 0;
+  list-style: none;
+}
+.lock-more summary::-webkit-details-marker { display: none; }
+.lock-more summary::before { content: "\203a "; display: inline-block; width: 12px;
+                             transition: transform var(--fast) var(--ease); }
+.lock-more[open] summary::before { transform: rotate(90deg); }
+.lock-more summary:hover { color: var(--text); }
+.studio-steps {
+  margin: 6px 0 10px; padding-left: 18px; font-size: 11.5px; line-height: 1.7;
+  color: var(--text-dim);
+}
+.studio-steps a { color: var(--accent-text); }
 
 /* ── command palette and the keyboard sheet ───────────────────────────────── */
 .palette-wrap {

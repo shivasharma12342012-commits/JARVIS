@@ -25,7 +25,7 @@ languages including Hindi, Bengali, Telugu, Marathi and Tamil.
 | **An editor that edits** | Open, change and save, sandboxed to the workspace. Auto-indent, bracket pairs, comment toggling, move and duplicate lines, find and replace, go to line, fuzzy open, a minimap, change bars in the gutter, and native undo because it is built on a real text area. |
 | **54 languages** | One tokeniser, fifty-four grammars, and your colours rather than a palette of its own. The round trip is checked against every file in this repository: strip the spans, unescape, get the source back character for character. |
 | **Glass** | Translucent panels with lit edges and a specular highlight that follows the pointer, over three washes of your accent drifting on mutually prime periods. Every bit of it stops under `prefers-reduced-motion`. |
-| **A lock on the window** | Optional sign-in, by password or by Google. The password is a salted scrypt hash in a file this machine keeps, never a literal in a source file. Off by default; one setting turns it on. |
+| **A lock on the window** | Set a password in **Appearance → Security** and the window is locked; remove it and it is not. No file to edit, no command to run, no restart. Google sign-in too, set up in the same panel. |
 | **Logs** | The session as it happens — timestamp, level, message — filterable by level, fed by the same event stream as everything else. |
 | **A real terminal** | PowerShell on Windows, your login shell elsewhere, running as one long-lived process beside the conversation. `cd` sticks, variables persist, history on the arrow keys, exit codes in red. |
 | **The agentic HUD, in the app** | Its own grammar — `⏺` for what J.A.R.V.I.S. did, `⎿` for what came back — streaming live in its own tab. The terminal front end is not replaced by the window; it is reproduced in it, and still runs on its own. |
@@ -34,7 +34,7 @@ languages including Hindi, Bengali, Telugu, Marathi and Tamil.
 | **Full-screen HUD** | The whole terminal, in Claude Code's grammar: a scrollable transcript, replies that arrive word by word, instrument cards that spin while they run and resolve in place, and a working line that says what it is doing and how to stop it. It opens on a greeting that has read the machine first. `--classic` restores the old pinned strip. |
 | **Live keywords** | `talk` and `quiet` act the moment you send them, and are coloured as you type them so you can see it before you press enter. |
 | **Built to answer fast** | The model is loaded before you ask; the reply streams to the screen as it is generated; independent instruments run side by side; Ctrl-C tears the request down rather than asking it to stop when convenient. |
-| **Wake-word voice** | Say **"Hello J.A.R.V.I.S."** or **"Namaste, J.A.R.V.I.S."** Background listening, a rising chime, and he never answers his own echo. |
+| **Wake-word voice** | Say **"Hello J.A.R.V.I.S."**, **"Namaste, J.A.R.V.I.S."** or **"Pi lagu, J.A.R.V.I.S."** Background listening, a rising chime, and he never answers his own echo — and in the window, the whole room turns blue while he listens. |
 | **Knows your voice** | Enrol once and the call word is checked against your voiceprint. |
 | **Background listener** | `--daemon` waits for the call word with no window open, greets you, and opens a terminal. |
 | **Speaks as it thinks** | Sentences go to the speaker as they stream, so he starts answering in about a second instead of eight. |
@@ -130,16 +130,45 @@ prompt — follows this setting, and it is translated per language (`सर`, `�
 
 ## Waking him
 
-The call words are exactly two:
+The call words are three:
 
 | Say | |
 |---|---|
 | **"Hello J.A.R.V.I.S."** | English |
-| **"Namaste, J.A.R.V.I.S."** | and its native forms — नमस्ते जार्विस, নমস্তে জার্ভিস, வணக்கம் ஜார்விஸ் |
+| **"Namaste, J.A.R.V.I.S."** | English |
+| **"Pi lagu, J.A.R.V.I.S."** | पाय लागू जार्विस — also heard as *pay lagu*, *paay laagu*, *pai lagu* |
 
 Speech recognition never returns the dots, so `Hello J.A.R.V.I.S.`, `hello jarvis` and
 even `hello j a r v i s` all normalise to the same phrase. Common mishearings of the name
-(`jervis`, `javis`, `jarwis`) are accepted too.
+(`jervis`, `javis`, `jarwis`) are accepted too, and each greeting is configured under
+several spellings — a recogniser hands back what it heard rather than what was meant, and
+a greeting that only works when the microphone spells it your way is not a greeting.
+
+### The window turns blue
+
+Say it with the desktop window open and the whole thing lights up:
+
+| | |
+|---|---|
+| **The moment it hears you** | One brighter beat, and a ring out from the middle. |
+| **While it is listening** | A blue wash over the window and a lit border that breathes with the level of your voice. |
+| **While it answers** | The same field, calmer and green, so the two halves of a conversation do not look identical. |
+
+Blue whatever accent you chose — the one deliberate exception to deriving every
+colour in the interface from your seed. A signal that means *he is listening to the
+room* has to read the same way every time, at a glance, from across a room, and it
+cannot if it is whatever colour somebody picked last week. Your accent is mixed in
+at a fifth so it still belongs to the theme.
+
+The microphone button in the composer starts and stops listening, and says what it
+is doing. It used to send the word "talk" as a chat message, which is not what a
+microphone button is. Under `prefers-reduced-motion` nothing moves; the colour still
+says it.
+
+A window opened on its own — `jarvis-desktop`, with no terminal behind it — now
+builds its own voice, so it can be spoken to. A window opened onto a running
+terminal session is looking at *that* session's microphone, does not own it, and
+says so rather than pretending to switch it on and off underneath it.
 
 A bare **"Jarvis"** deliberately does **not** wake him — the call word is the whole
 greeting, so mentioning him in conversation is safe. Set `WAKE_ALLOW_BARE_NAME=true` if
@@ -819,78 +848,100 @@ remote code execution hole for any page in the browser.
 
 ## Signing in
 
-The window has always been bound to loopback and gated on a per-session token,
-which answers *"can anything on the network reach this?"* It has never answered
-*"is this the person who started it?"* — anyone who walks up to an unlocked
-machine gets a shell, a file browser and an editor.
+Nothing is locked when you install it, and nothing has to be configured to lock
+it. Open **Appearance → Security** and set a password. That is the whole thing.
 
-This is that second answer, and it is **off by default**:
-
-```bash
-# a password
-python main.py set-password        # typed in, never written down
-# then, in .env
-DESKTOP_AUTH_MODE=password
-
-# ...or Google
-DESKTOP_AUTH_MODE=google
-GOOGLE_CLIENT_ID=1234567890-abc.apps.googleusercontent.com
-
-# ...or either
-DESKTOP_AUTH_MODE=any
+```
+SECURITY
+● Locked. It asks for your password.
+[ Change password ]  [ Remove it ]  [ Lock now ]
+› Sign in with Google instead
 ```
 
-With it on, `/` serves a lock screen instead of the application, and the lock
-screen is given the theme and nothing else — no token, no workspace path, no
-model name, nothing about the session behind it. Signing in mints a session
-cookie (`HttpOnly`, `SameSite=Strict`, in memory so a restart signs everyone
-out), and only then does the browser get the page — which is what hands out the
-token. Every route then needs both. The `Host` and `Origin` checks are untouched
-underneath: this is a third layer, not a replacement for the two below it.
+Set a password and the window is locked. Remove it and it is not. There is no
+mode to choose, no file to edit, no command to run and no restart — the model is
+one sentence long because most people who use this will never open a terminal.
 
-Six wrong guesses in a minute and the door stops answering for a minute. Not
-much against someone with local access, who has better options than the login
-form; a great deal against a guessable password.
+Four characters is enough. This is a lock on a laptop, not a login to a service:
+six wrong guesses in a minute and the door stops answering for a minute, which
+makes even a four-digit PIN about a day's work to walk. A person who will not
+set a PIN sets nothing at all, and nothing is worse.
 
-### The password is not in the code
+**Lock now** signs every browser out and shows the lock screen. **Keep me signed
+in** on that screen lasts a week rather than a working day — and only until
+J.A.R.V.I.S. restarts, because sessions live in memory and none of them is
+written down.
 
-You asked for it to be saved in the code. It is saved, but as a **salted scrypt
-hash** in `.jarvis_credentials.json` beside the profile, mode `0600`, ignored by
-git — not as a literal in a Python file. That is a deliberate departure and the
-reason is short: this repository gets pushed to GitHub, so a password written
-into a source file is a password published to the internet, along with every
-other place you happen to use it. `python main.py set-password` reads it from
-the terminal, hashes it, and forgets it. `clear-password` removes it.
+### What happens behind it
 
-scrypt at N=2¹⁵ takes about a tenth of a second per attempt, which nobody
-notices once per sign-in and which makes a dictionary sweep hopeless.
+With a password set, `/` serves a lock screen instead of the application, and
+that screen is given the theme and nothing else: no token, no workspace path, no
+model name, nothing about the session behind it. Signing in mints an `HttpOnly`,
+`SameSite=Strict` cookie, and only then does the browser get the page — which is
+what hands out the token. Every route then needs both. The `Host` and `Origin`
+checks are untouched underneath: a third layer, not a replacement for the two
+below it.
 
 ### Google
 
-OAuth 2.0 with PKCE on a loopback redirect — the flow Google documents for
-native applications. Make a **Desktop app** client in a Google Cloud project and
-put its ID in `GOOGLE_CLIENT_ID`; its "secret", if it has one, is not
-confidential on a user's machine and PKCE is what actually protects the exchange,
-so `GOOGLE_CLIENT_SECRET` is optional.
+Google needs a client ID of your own. There is no way around that — every copy
+of every application that signs in with Google has one — but the setup is in the
+window rather than in a dotfile. Open **Appearance → Security → Sign in with
+Google instead**, and it walks you through it:
 
-The code is exchanged by this process, directly with Google's token endpoint,
-over TLS. The ID token therefore arrives over an authenticated channel rather
-than through the browser, which is Google's own documented exception to
-verifying its signature locally — and what keeps this inside the standard
-library instead of pulling in a JWT stack for one check. The claims are still
-checked: audience, issuer, expiry, and that the address is verified.
+1. Open [Google Cloud › Credentials](https://console.cloud.google.com/apis/credentials)
+2. Create credentials › OAuth client ID › **Desktop app**
+3. Paste the client ID into the box
 
-Leave `GOOGLE_ALLOWED_ACCOUNTS` empty and the first account to sign in claims the
-window and is remembered; nobody else gets in after that. Set it to a list and
-only those addresses do.
+It is OAuth 2.0 with PKCE on a loopback redirect, the flow Google documents for
+native applications. This process exchanges the code with Google's token
+endpoint directly over TLS, so the ID token arrives over an authenticated
+channel rather than through the browser — Google's own documented exception to
+verifying its signature locally, and what keeps this inside the standard library
+instead of pulling in a JWT stack for one check. Audience, issuer, expiry and
+`email_verified` are all still checked.
+
+The first account to sign in claims the window and is remembered; nobody else
+gets in after that. `GOOGLE_ALLOWED_ACCOUNTS` names a list instead.
+
+### The password is not in the code
+
+You asked for it saved in the code. It is saved — as a **salted scrypt hash** in
+`.jarvis_credentials.json` beside the profile, mode `0600`, ignored by git — and
+not as a literal in a Python file.
+
+That is a deliberate departure, and the reason is short: this repository is
+pushed to GitHub, so a password written into a source file is a password
+published to the internet, along with every other place the same one is used.
+Nothing in this project ever writes a password down; the panel reads it, hashes
+it and forgets it.
+
+### If you would rather use a terminal
+
+Everything above has a command-line equivalent, and a setting that overrides the
+panel for anyone deploying this somewhere shared:
+
+```bash
+python main.py set-password        # typed in, never written down
+python main.py clear-password
+```
+
+| Key | Default | |
+|---|---|---|
+| `DESKTOP_AUTH_MODE` | *(follows what is set up)* | `off` · `password` · `google` · `any` |
+| `DESKTOP_AUTH_TTL_HOURS` | `12` | A session that was not asked to be remembered |
+| `GOOGLE_CLIENT_ID` | *(empty)* | Overrides whatever was pasted into the panel |
+| `GOOGLE_ALLOWED_ACCOUNTS` | *(empty)* | Addresses allowed in |
+
+Write `DESKTOP_AUTH_MODE` down and it wins: the panel says so and stops offering
+a switch that would not take. Somebody who spelled it out meant it.
 
 ### What it is not
 
 A defence against a hostile process on the same machine. Something running as
-you can read the token out of the page, the cookie out of the browser, or simply
-the model's replies off the screen — and it could do all of that before any of
-this existed. What a lock screen defends against is the laptop left open, which
-is the threat that actually happens.
+you can read the token out of the page or the cookie out of the browser, and
+could before any of this existed. What a lock screen defends against is the
+laptop left open, which is the threat that actually happens.
 
 ---
 
@@ -1119,7 +1170,7 @@ pip install pytest pytest-asyncio
 pytest -q
 ```
 
-Three hundred and seventy-four tests, no Ollama daemon and no microphone, well
+Four hundred and nine tests, no Ollama daemon and no microphone, well
 under two minutes. Most need no browser either; the handful in
 `tests/test_ui.py` drive the real front end through Playwright and skip
 themselves cleanly when it is not installed. The model is a scripted fake and the HUD is driven
@@ -1190,11 +1241,7 @@ Copy `.env.example` to `.env`. Every key is optional; the defaults are already s
 | `DESKTOP_SHELL_ENABLED` | `true` | Whether the window has a terminal at all |
 | `DESKTOP_EDIT_ENABLED` | `true` | Whether the editor may write to disk |
 | `DESKTOP_EDIT_MAX_BYTES` | `2000000` | Ceiling on one save |
-| `DESKTOP_AUTH_MODE` | `off` | `off` · `password` · `google` · `any` |
-| `DESKTOP_AUTH_TTL_HOURS` | `12` | How long a signed-in browser stays signed in |
-| `GOOGLE_CLIENT_ID` | *(empty)* | OAuth client from your Google Cloud project |
-| `GOOGLE_CLIENT_SECRET` | *(empty)* | Only if your client was registered with one |
-| `GOOGLE_ALLOWED_ACCOUNTS` | *(empty)* | Addresses allowed in; empty means the first to sign in |
+| `DESKTOP_AUTH_MODE` | *(follows the Security panel)* | See [Signing in](#signing-in) |
 | `WORKSPACE_ROOT` | project directory | The boundary he may act inside freely |
 | `PERMISSION_MODE` | `ask` | `ask` · `allow` · `deny` for everything beyond it |
 | `ALLOWED_APPS` | *(empty)* | Applications that never need approval |

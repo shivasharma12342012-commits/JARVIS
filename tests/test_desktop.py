@@ -974,20 +974,31 @@ def test_the_page_pulls_in_every_script_and_stylesheet(app):
 # reach this?". These answer "is this the person who started it?" — and, just as
 # importantly, that switching the lock on does not switch anything else off.
 @pytest.fixture
-def locked(app, tmp_path, monkeypatch):
-    """The same app, with a password set and the lock switched on."""
-    from config import settings
-
+def unlocked(app, tmp_path, monkeypatch):
+    """The same app with a scratch credential file and nothing set up in it."""
     from jarvis import auth
 
     monkeypatch.setattr(auth, "CREDENTIALS_PATH", tmp_path / "credentials.json")
     monkeypatch.setattr(auth, "SCRYPT_N", 2 ** 10)
     monkeypatch.setattr(auth, "SCRYPT_MAXMEM", 128 * (2 ** 10) * 8 * 2)
-    monkeypatch.setattr(settings, "DESKTOP_AUTH_MODE", "password", raising=False)
-    auth.set_password("let me in please")
     app.sessions = auth.Sessions()
     app.throttle = auth.Throttle()
     return app
+
+
+@pytest.fixture
+def locked(unlocked):
+    """...and with a password set, which is the only thing that locks it.
+
+    No mode, no environment variable, no restart. That is the point: the whole
+    model for somebody who never opens a terminal is "set a password and it
+    locks; take it off and it does not".
+    """
+    from jarvis import auth
+
+    auth.set_password("let me in please")
+    assert auth.required() is True
+    return unlocked
 
 
 def _raw(app, path, body=None, token=True, cookie=None, headers=None):
@@ -1156,3 +1167,246 @@ def test_the_boot_payload_says_who_signed_in(locked):
     assert boot["auth"]["required"] is True
     assert boot["identity"]["method"] == "password"
     assert boot["token"] == locked.token
+
+
+# ══ setting the lock up from inside the window ═══════════════════════════════════════
+def test_a_password_set_in_the_window_locks_it(unlocked):
+    """No .env, no restart. The route the Security panel calls, and its effect."""
+    from jarvis import auth
+
+    assert _raw(unlocked, "/")[0] == 200
+    assert "This window is locked" not in _raw(unlocked, "/")[1]
+
+    status, body, _ = _raw(unlocked, "/api/auth/change", {"current": "", "password": "1234"})
+    assert status == 200 and json.loads(body)["ok"] is True
+    assert auth.required() is True
+    assert "This window is locked" in _raw(unlocked, "/", token=False)[1]
+
+
+def test_removing_the_password_unlocks_it(locked):
+    from jarvis import auth
+
+    cookie = _sign_in(locked)
+    status, body, _ = _raw(locked, "/api/auth/change",
+                           {"current": "let me in please", "password": ""}, cookie=cookie)
+    assert json.loads(body)["ok"] is True
+    assert auth.has_password() is False
+    assert auth.required() is False
+    assert "This window is locked" not in _raw(locked, "/")[1]
+
+
+def test_changing_it_needs_the_current_one(locked):
+    cookie = _sign_in(locked)
+    _, body, _ = _raw(locked, "/api/auth/change",
+                      {"current": "not it", "password": "something else"}, cookie=cookie)
+    assert json.loads(body)["ok"] is False
+    from jarvis import auth
+    assert auth.verify_password("let me in please") is True
+
+
+def test_changing_it_signs_out_everywhere_else(locked):
+    """What anybody changing a password means by it."""
+    other = _sign_in(locked)
+    mine = _sign_in(locked)
+    assert _raw(locked, "/api/state", cookie=other)[0] == 200
+
+    _raw(locked, "/api/auth/change",
+         {"current": "let me in please", "password": "a new one"}, cookie=mine)
+    assert _raw(locked, "/api/state", cookie=other)[0] == 401
+
+
+def test_the_first_password_can_be_set_from_the_lock_screen(unlocked, monkeypatch):
+    """First run with a mode written into .env and nothing set up yet.
+
+    Reachable without signing in \u2014 there is nothing to sign in with \u2014 which is
+    why it refuses the moment a password exists.
+    """
+    from config import settings
+
+    from jarvis import auth
+
+    # Both: the environment is what marks the mode as somebody's decision, and
+    # the settings object is where its value is read from, the way every other
+    # setting in this project resolves.
+    monkeypatch.setenv("DESKTOP_AUTH_MODE", "password")
+    monkeypatch.setattr(settings, "DESKTOP_AUTH_MODE", "password", raising=False)
+    assert auth.required() is True
+    page = _raw(unlocked, "/", token=False)[1]
+    assert "This window is locked" in page
+    assert unlocked.token not in page
+
+    status, body, headers = _raw(unlocked, "/api/auth/setup",
+                                 {"password": "1234"}, token=False)
+    assert status == 200 and json.loads(body)["ok"] is True
+    assert "jarvis_session=" in (headers.get("Set-Cookie") or "")
+    assert auth.has_password() is True
+
+
+def test_the_first_password_route_closes_once_there_is_one(locked):
+    """Otherwise it would be a way to replace somebody else's lock."""
+    _, body, _ = _raw(locked, "/api/auth/setup", {"password": "mine now"}, token=False)
+    assert json.loads(body)["ok"] is False
+    from jarvis import auth
+    assert auth.verify_password("let me in please") is True
+
+
+def test_keep_me_signed_in_asks_for_a_longer_cookie(locked):
+    _, _, plain = _raw(locked, "/api/auth/password",
+                       {"password": "let me in please"}, token=False)
+    _, _, remembered = _raw(locked, "/api/auth/password",
+                            {"password": "let me in please", "remember": True}, token=False)
+    age = lambda headers: int((headers.get("Set-Cookie") or "Max-Age=0").split("Max-Age=")[1])
+    assert age(remembered) > age(plain)
+
+
+def test_a_google_client_can_be_pasted_into_the_window(unlocked):
+    from jarvis import auth
+
+    status, body, _ = _raw(unlocked, "/api/auth/google/config",
+                           {"clientId": "abc.apps.googleusercontent.com"})
+    assert status == 200 and json.loads(body)["ok"] is True
+    assert auth.google_client_id() == "abc.apps.googleusercontent.com"
+    assert auth.required() is True
+
+
+def test_a_mistyped_google_client_is_caught(unlocked):
+    _, body, _ = _raw(unlocked, "/api/auth/google/config", {"clientId": "my-secret-key"})
+    result = json.loads(body)
+    assert result["ok"] is False and "does not look like" in result["error"]
+
+
+def test_the_panel_cannot_overrule_a_mode_written_down(locked, monkeypatch):
+    monkeypatch.setenv("DESKTOP_AUTH_MODE", "password")
+    cookie = _sign_in(locked)
+    _, body, _ = _raw(locked, "/api/auth/mode", {"mode": "off"}, cookie=cookie)
+    result = json.loads(body)
+    assert result["ok"] is False and ".env" in result["error"]
+
+
+def test_lock_now_signs_everyone_out(locked):
+    cookie = _sign_in(locked)
+    assert _raw(locked, "/api/state", cookie=cookie)[0] == 200
+    assert _raw(locked, "/api/auth/lock", {}, cookie=cookie)[0] == 200
+    assert _raw(locked, "/api/state", cookie=cookie)[0] == 401
+
+
+def test_a_refused_post_does_not_poison_the_connection(locked):
+    """This server keeps connections alive, so a body left unread in the socket
+    arrives glued to the front of the next request. It came back as
+    `501 Unsupported method ('{}GET')` \u2014 harmless while every refusal was a
+    bug, and not harmless once a 401 became an ordinary thing to say."""
+    import http.client
+
+    base = locked.url.split("?")[0].rstrip("/")
+    host, _, port = base.split("//", 1)[1].partition(":")
+    connection = http.client.HTTPConnection(host, int(port), timeout=5)
+    try:
+        connection.request("POST", "/api/chat", body=json.dumps({"text": "refused"}),
+                           headers={"Content-Type": "application/json",
+                                    "X-Jarvis-Token": locked.token})
+        first = connection.getresponse()
+        first.read()
+        assert first.status == 401
+
+        connection.request("GET", "/api/auth/state")
+        second = connection.getresponse()
+        second.read()
+        assert second.status == 200
+    finally:
+        connection.close()
+
+
+# ══ hearing and speaking ═════════════════════════════════════════════════════════════
+def test_the_wake_word_reaches_the_window(app):
+    """A window has to be told it was woken; a terminal HUD has no use for it."""
+    # Waiting on the phrase, not on "wake": the event name arrives a line before
+    # its data does, and stopping at the name reads only half the frame.
+    frames, worker = read_events(app, seconds=1.5, until="namaste")
+    app.hud.wake("namaste jarvis")
+    worker.join(timeout=3.0)
+    joined = "".join(frames)
+    assert "wake" in joined, joined
+    assert "namaste jarvis" in joined, joined
+
+
+def test_a_wake_is_not_replayed_into_a_window_opened_later(app):
+    """It is a moment, not a state. Replaying it would light the room for
+    something that happened an hour ago."""
+    assert "wake" in desktop_mod._EPHEMERAL_EVENTS
+
+
+def test_the_terminal_hud_does_not_have_to_understand_being_woken(app):
+    """The mirror forwards what the other front end has and passes over the rest."""
+    class OldHud:
+        def __init__(self):
+            self.seen = []
+
+        def log_system(self, text, level="info"):
+            self.seen.append(text)
+
+    old = OldHud()
+    hud = desktop_mod.DesktopHUD(app.hub, mirror=old)
+    hud.wake("hello jarvis")          # must not raise
+    hud.log_system("and this still gets through")
+    assert old.seen == ["and this still gets through"]
+
+
+def test_an_attached_window_does_not_own_the_microphone(app):
+    """The terminal session's voice is not the window's to switch on and off."""
+    snapshot = app.voice_snapshot()
+    assert snapshot["owned"] is False
+    assert app.voice_action({"listen": True})["ok"] is False
+
+
+def test_the_voice_route_says_no_rather_than_failing(app):
+    status, body, _ = _raw(app, "/api/voice", {"listen": True})
+    assert status == 200
+    assert json.loads(body)["ok"] is False
+
+
+def test_the_boot_payload_describes_the_voice(app):
+    voice = get_json(app, "/api/state")["voice"]
+    assert set(voice) >= {"available", "listening", "muted", "status"}
+
+
+def test_a_window_of_its_own_builds_a_voice_or_says_why_not():
+    """Standalone, `jarvis-desktop` used to have no ears at all — the voice lived
+    in the terminal front end and nowhere else. Building one must never be the
+    reason a window refuses to open, so every failure here is survivable."""
+    backend = desktop_mod.StandaloneBackend(turbo=False, monitor=False)
+    backend.hud = None
+    backend._build_voice()
+    snapshot = backend.voice_snapshot()
+    assert isinstance(snapshot, dict)
+    assert snapshot["available"] in (True, False)
+    # No microphone in a test container, so this is the branch that runs here.
+    if backend.voice is None:
+        assert snapshot["available"] is False
+        assert backend.voice_action({"listen": True})["ok"] is False
+
+
+def test_the_voice_is_switched_off_by_configuration(monkeypatch):
+    from config import settings
+
+    monkeypatch.setattr(settings, "VOICE_ENABLED", False)
+    backend = desktop_mod.StandaloneBackend(turbo=False, monitor=False)
+    backend.hud = None
+    backend._build_voice()
+    assert backend.voice is None
+
+
+def test_every_call_phrase_survives_the_wake_normaliser():
+    """A greeting the recogniser spells its own way is not a greeting. Several
+    spellings of each are configured, and every one has to normalise to itself."""
+    from config import settings
+
+    from jarvis.voice import normalise_wake
+
+    assert len(settings.WAKE_WORDS) >= 6
+    for phrase in settings.WAKE_WORDS:
+        normalised = normalise_wake(phrase)
+        assert normalised, phrase
+        assert normalise_wake(normalised) == normalised, phrase
+    spellings = " ".join(settings.WAKE_WORDS).lower()
+    for expected in ("hello jarvis", "namaste jarvis", "lagu jarvis"):
+        assert expected in spellings, expected

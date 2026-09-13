@@ -50,6 +50,7 @@ import logging
 import mimetypes
 import os
 import queue
+import random
 import secrets
 import shutil
 import socket
@@ -204,7 +205,9 @@ class EventHub:
 #: Events not worth replaying to a window that opens later: they describe an
 #: instant, not a fact, and a stale one would be actively misleading.
 _EPHEMERAL_EVENTS = {
-    "telemetry", "amplitude", "token", "heartbeat", "state",
+    # "wake" is a moment, not a state: replaying it into a window opened later
+    # would light the room for something that happened an hour ago.
+    "telemetry", "amplitude", "token", "heartbeat", "state", "wake",
     # The shell keeps its own scrollback in the pane; replaying a thousand
     # lines of it into a reloaded tab would be neither useful nor cheap.
     "shell_out", "shell_done", "shell_exit",
@@ -346,6 +349,16 @@ class DesktopHUD:
     def set_protocol(self, name: str | None) -> None:
         self.hub.publish("protocol", name=str(name or ""))
         self._mirrored("set_protocol", name)
+
+    def wake(self, phrase: str = "") -> None:
+        """The call word was heard. The window lights up; the terminal does not.
+
+        Mirrored like everything else, and the terminal HUD simply has no such
+        method \u2014 which :meth:`_mirrored` handles by doing nothing. A front end
+        that wants to react to being woken can; one that does not, need not know.
+        """
+        self.hub.publish("wake", phrase=str(phrase or ""))
+        self._mirrored("wake", phrase)
 
     def set_voice_status(self, text: str) -> None:
         self.hub.publish("voice_status", text=str(text))
@@ -615,6 +628,10 @@ PUBLIC_ROUTES = frozenset({
     "/", "/index.html", "/signin",
     "/api/auth/state", "/api/auth/password", "/api/auth/google/start",
     "/api/auth/google/callback",
+    # First run: there is no password yet, so there is nothing to sign in with.
+    # The handler refuses the moment one exists, which is what keeps this from
+    # being a way to overwrite somebody else's lock.
+    "/api/auth/setup",
 })
 
 #: How many paths the fuzzy opener is given. A ceiling, not a target.
@@ -1008,6 +1025,10 @@ class StandaloneBackend(Backend):
         self.engine: Any = None
         self.monitor: Any = None
         self.broker: Any = None
+        #: Ears and a mouth. A window opened on its own used to have neither —
+        #: the voice lived in the terminal front end and nowhere else — so
+        #: `jarvis-desktop` could not be spoken to at all.
+        self.voice: Any = None
         self._queue: queue.Queue[str | None] = queue.Queue()
         self._worker: threading.Thread | None = None
         self._stopping = threading.Event()
@@ -1027,23 +1048,24 @@ class StandaloneBackend(Backend):
             settings.MODEL_NAME = self.model
 
         hud = self.hud
+        self._build_voice()
         self.monitor = AmbientMonitor(
             on_alert=self._on_alert,
             on_telemetry=lambda t: hud and hud.set_telemetry(t),
         )
-        self.engine = ProtocolEngine(hud=hud, voice=None, monitor=self.monitor)
-        self.broker = PermissionBroker(hud=hud, voice=None, protocol_engine=self.engine)
+        self.engine = ProtocolEngine(hud=hud, voice=self.voice, monitor=self.monitor)
+        self.broker = PermissionBroker(hud=hud, voice=self.voice, protocol_engine=self.engine)
         self.registry = build_registry(self.engine, hud, self.monitor, self.broker)
         self.agent = build_agent(
             self.registry,
             turbo=self.turbo,
             hud=hud,
-            voice=None,
+            voice=self.voice,
             protocol_engine=self.engine,
             monitor=self.monitor,
         )
         self.engine.bind(agent=self.agent)
-        self.broker.bind(hud=hud, voice=None, protocol_engine=self.engine)
+        self.broker.bind(hud=hud, voice=self.voice, protocol_engine=self.engine)
 
         if self.want_monitor:
             try:
@@ -1057,6 +1079,107 @@ class StandaloneBackend(Backend):
         # The model check runs off the hot path: the window is already usable,
         # and a missing Ollama should be a line in the transcript, not a stall.
         threading.Thread(target=self._preflight, name="desktop-preflight", daemon=True).start()
+
+    def _build_voice(self) -> None:
+        """Bring up wake-word listening, if this machine and this config allow it.
+
+        Every failure here is survivable and none of them is worth refusing to
+        open the window over: no microphone, no speech library, no audio device.
+        The window says what it has and carries on without the rest.
+        """
+        if not bool(getattr(settings, "VOICE_ENABLED", True)):
+            LOG.info("voice subsystem disabled by configuration")
+            return
+        try:
+            from jarvis.voice import VoiceSystem
+        except Exception:
+            LOG.info("voice subsystem unavailable (its dependencies are not installed)")
+            return
+
+        hud = self.hud
+        try:
+            self.voice = VoiceSystem(
+                on_wake=self._on_wake,
+                on_utterance=self.submit,
+                on_state=lambda state: hud and hud.set_state(state),
+                on_amplitude=lambda level: hud and hud.set_amplitude(level),
+                on_log=lambda text, level="info": hud and hud.log_system(text, level),
+            )
+        except Exception:
+            LOG.warning("The voice subsystem would not start", exc_info=True)
+            self.voice = None
+            return
+
+        # Silent until invited, exactly as the terminal starts.
+        if bool(getattr(settings, "START_MUTED", True)):
+            try:
+                self.voice.set_muted(True)
+            except Exception:
+                LOG.debug("Could not start muted", exc_info=True)
+        if hud is not None:
+            try:
+                hud.set_voice_status(self.voice.status.describe())
+            except Exception:
+                LOG.debug("Could not report the voice status", exc_info=True)
+
+    def _on_wake(self) -> None:
+        """The call word was heard. Light the window, then say something back."""
+        hud = self.hud
+        if hud is not None:
+            try:
+                hud.wake()
+            except Exception:
+                LOG.debug("Could not announce the wake", exc_info=True)
+        try:
+            from jarvis import prompts
+
+            line = prompts.personalise(random.choice(prompts.WAKE_ACKNOWLEDGEMENTS))
+        except Exception:
+            line = "Yes?"
+        if hud is not None:
+            hud.log_system(line, "info")
+        if self.voice is not None:
+            try:
+                # Blocking, so the acknowledgement finishes before the microphone
+                # reopens and hears J.A.R.V.I.S. instead of the operator.
+                self.voice.speak(line, blocking=True)
+            except Exception:
+                LOG.debug("Could not speak the acknowledgement", exc_info=True)
+
+    # -- what the window asks of the voice ----------------------------------------------
+    def voice_snapshot(self) -> dict[str, Any]:
+        """What the microphone control in the window needs to draw itself."""
+        if self.voice is None:
+            return {"available": False, "listening": False, "muted": True,
+                    "status": "no voice on this install", "phrases": []}
+        status = self.voice.status
+        return {
+            "available": bool(getattr(status, "stt_available", False)),
+            "speaks": bool(getattr(status, "tts_available", False)),
+            "listening": bool(getattr(self.voice, "listening", False)),
+            "muted": bool(self.voice.is_muted()) if hasattr(self.voice, "is_muted") else False,
+            "status": status.describe(),
+            "phrases": list(getattr(settings, "WAKE_WORDS", []))[:6],
+        }
+
+    def voice_action(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Start or stop listening, or mute the speech, from the window."""
+        if self.voice is None:
+            return {"ok": False, "error": "this install has no voice subsystem"}
+        try:
+            if "listen" in body:
+                if body.get("listen"):
+                    if not self.voice.start_listening():
+                        return dict({"ok": False, "error": "no microphone was available"},
+                                    **self.voice_snapshot())
+                else:
+                    self.voice.stop_listening()
+            if "muted" in body:
+                self.voice.set_muted(bool(body.get("muted")))
+        except Exception as error:
+            LOG.warning("The voice subsystem refused that", exc_info=True)
+            return {"ok": False, "error": str(error)}
+        return dict({"ok": True}, **self.voice_snapshot())
 
     def _preflight(self) -> None:
         """Report the model's availability into the window, once, at startup."""
@@ -1081,6 +1204,16 @@ class StandaloneBackend(Backend):
     def shutdown(self) -> None:
         self._stopping.set()
         self._queue.put(None)
+        # The microphone first: a background listener left running holds the
+        # audio device open, and the next thing to want it will not get it.
+        if self.voice is not None:
+            for method in ("stop_listening", "shutdown", "stop"):
+                closer = getattr(self.voice, method, None)
+                if callable(closer):
+                    try:
+                        closer()
+                    except Exception:
+                        LOG.debug("voice.%s complained", method, exc_info=True)
         for closer, label in ((self.monitor, "monitor"), (self.agent, "agent")):
             close = getattr(closer, "stop", None) or getattr(closer, "close", None)
             if callable(close):
@@ -1269,17 +1402,18 @@ class _Handler(BaseHTTPRequestHandler):
             return auth.OPEN
         return self.app.sessions.resolve(self._cookie(SESSION_COOKIE))
 
-    def _grant(self, identity: Any) -> None:
+    def _grant(self, identity: Any, remember: bool = False) -> None:
         """Hand the browser a session cookie for a successful sign-in.
 
         ``HttpOnly`` so no script on the page can read it, ``SameSite=Strict``
         so no other site can cause the browser to send it. Not ``Secure``: this
         is plain http on 127.0.0.1 and a Secure cookie would simply be dropped.
         """
-        token = self.app.sessions.mint(identity)
+        token = self.app.sessions.mint(identity, remember=remember)
+        lifetime = self.app.sessions.remembered_ttl if remember else self.app.sessions.ttl
         self._cookie_header = (
             f"{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict; "
-            f"Max-Age={int(self.app.sessions.ttl)}"
+            f"Max-Age={int(lifetime)}"
         )
 
     def _clear_cookie(self) -> None:
@@ -1364,13 +1498,31 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802 - base class name
         route = urlparse(self.path).path
+        # Read *before* deciding whether to answer. A refused POST whose body is
+        # left sitting in the socket poisons the connection: this server keeps
+        # it alive, so the next request arrives with the unread bytes glued to
+        # the front of it and comes back as `501 Unsupported method ('{}GET')`.
+        # Harmless while every refusal was a bug anyway; not harmless now that a
+        # 401 is an ordinary thing to say to a window that has just been locked.
+        body = self._body()
         if not self._gate(route):
             return
         self.app.touch()
-        body = self._body()
 
         if route == "/api/auth/password":
             self._json(self._password_signin(body))
+        elif route == "/api/auth/setup":
+            self._json(self._first_password(body))
+        elif route == "/api/auth/change":
+            self._json(self._change_password(body))
+        elif route == "/api/auth/google/config":
+            self._json(self._google_config(body))
+        elif route == "/api/auth/mode":
+            self._json(self._set_mode(body))
+        elif route == "/api/auth/lock":
+            self.app.sessions.revoke_all()
+            self._clear_cookie()
+            self._json({"ok": True})
         elif route == "/api/auth/logout":
             self.app.sessions.revoke(self._cookie(SESSION_COOKIE))
             self._clear_cookie()
@@ -1394,6 +1546,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._json({"ok": resolved})
         elif route == "/api/shell":
             self._json(self._shell_action(body))
+        elif route == "/api/voice":
+            self._json(self.app.voice_action(body))
         elif route == "/api/save":
             self._json(self.app.workspace.write(
                 str(body.get("path") or ""),
@@ -1466,8 +1620,96 @@ class _Handler(BaseHTTPRequestHandler):
         self.app.throttle.succeed()
         identity = auth.Identity(method="password", subject="operator",
                                  name=str(settings.USER_NAME or "") or "Operator")
-        self._grant(identity)
+        self._grant(identity, remember=bool(body.get("remember")))
         return {"ok": True, "identity": identity.to_dict()}
+
+    # -- managing the lock from inside the window ---------------------------------------
+    def _first_password(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Set the very first password, from the lock screen, on first run.
+
+        Reachable without signing in, which is the point: there is nothing to
+        sign in with yet. It stops working the instant a password exists, so it
+        can never be used to replace one — that path needs the current password
+        and goes through :meth:`_change_password`.
+        """
+        if auth.has_password():
+            return {"ok": False, "error": "a password is already set"}
+        secret = str(body.get("password") or "")
+        try:
+            auth.set_password(secret)
+        except ValueError as error:
+            return {"ok": False, "error": str(error)}
+
+        identity = auth.Identity(method="password", subject="operator",
+                                 name=str(settings.USER_NAME or "") or "Operator")
+        self._grant(identity, remember=bool(body.get("remember")))
+        LOG.info("a password was set from the lock screen")
+        return {"ok": True, "identity": identity.to_dict()}
+
+    def _change_password(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Change or remove the password. Always needs the current one first."""
+        if self._identity() is None and auth.required():
+            return {"ok": False, "error": "not signed in"}
+        if auth.has_password() and not auth.verify_password(str(body.get("current") or "")):
+            self.app.throttle.fail()
+            return {"ok": False, "error": "that is not the current password"}
+
+        wanted = str(body.get("password") or "")
+        if not wanted:
+            auth.clear_password()
+            LOG.info("the password was removed from the Security panel")
+            return {"ok": True, "removed": True, "auth": auth.describe()}
+        try:
+            auth.set_password(wanted)
+        except ValueError as error:
+            return {"ok": False, "error": str(error)}
+
+        # Changing the password signs out everywhere else, which is what anybody
+        # changing a password means by it. This browser is signed back in on the
+        # way out, so the person doing it is not the one who gets locked out.
+        self.app.sessions.revoke_all()
+        identity = auth.Identity(method="password", subject="operator",
+                                 name=str(settings.USER_NAME or "") or "Operator")
+        self._grant(identity, remember=True)
+        LOG.info("the password was changed from the Security panel")
+        return {"ok": True, "auth": auth.describe()}
+
+    def _google_config(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Store the Google client pasted into the Security panel."""
+        if self._identity() is None and auth.required():
+            return {"ok": False, "error": "not signed in"}
+        if auth.describe()["googleManaged"]:
+            return {"ok": False, "error": "GOOGLE_CLIENT_ID is set in your .env; change it there"}
+
+        client = str(body.get("clientId") or "").strip()
+        if not client:
+            auth.clear_google_client()
+            return {"ok": True, "auth": auth.describe()}
+        # Not validation so much as a typo check: every Google client id ends
+        # this way, and pasting the wrong field is the commonest mistake here.
+        if not client.endswith(".apps.googleusercontent.com"):
+            return {"ok": False,
+                    "error": "that does not look like a client ID — it should end in "
+                             ".apps.googleusercontent.com"}
+        auth.set_google_client(client, str(body.get("clientSecret") or ""))
+        return {"ok": True, "auth": auth.describe()}
+
+    def _set_mode(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Turn the lock on or off from the Security panel."""
+        if self._identity() is None and auth.required():
+            return {"ok": False, "error": "not signed in"}
+        if auth.describe()["managed"]:
+            return {"ok": False, "error": "DESKTOP_AUTH_MODE is set in your .env; change it there"}
+
+        wanted = str(body.get("mode") or "").strip().lower()
+        if wanted not in auth.MODES:
+            return {"ok": False, "error": "no such mode"}
+        if wanted in ("password", "any") and not auth.has_password():
+            return {"ok": False, "error": "set a password first"}
+        if wanted in ("google", "any") and not auth.google_client_id():
+            return {"ok": False, "error": "add a Google client ID first"}
+        auth.set_mode(wanted)
+        return {"ok": True, "auth": auth.describe()}
 
     def _redirect_uri(self) -> str:
         """Where Google sends the browser back to. Loopback, on this very port."""
@@ -1497,7 +1739,9 @@ class _Handler(BaseHTTPRequestHandler):
         if identity is None:
             self._signin_page(error=why or "that sign-in did not complete")
             return
-        self._grant(identity)
+        # Remembered by default. The round trip through Google left no checkbox
+        # to carry back, and anyone who just chose an account meant to stay.
+        self._grant(identity, remember=True)
         # Straight to the application, rather than back to a page that would
         # only tell them to click through to it.
         self._page()
@@ -1966,12 +2210,36 @@ class DesktopApp:
             # server would only refuse.
             "canEdit": bool(getattr(settings, "DESKTOP_EDIT_ENABLED", True)),
             "auth": auth.describe(),
+            "voice": self.voice_snapshot(),
         }
         try:
             payload.update(self.backend.snapshot())
         except Exception:
             LOG.debug("Backend would not describe itself", exc_info=True)
         return payload
+
+    # -- the voice, wherever it happens to live -----------------------------------------
+    def voice_snapshot(self) -> dict[str, Any]:
+        """What the window's microphone control needs.
+
+        The voice belongs to the backend, and only one backend has one: a window
+        attached to a running terminal is looking at that terminal's voice, which
+        it does not own and must not switch on and off underneath it.
+        """
+        describe = getattr(self.backend, "voice_snapshot", None)
+        if callable(describe):
+            try:
+                return dict(describe(), owned=True)
+            except Exception:
+                LOG.debug("The backend would not describe its voice", exc_info=True)
+        return {"available": False, "owned": False, "listening": False, "muted": True,
+                "status": "the voice belongs to the terminal session", "phrases": []}
+
+    def voice_action(self, body: dict[str, Any]) -> dict[str, Any]:
+        act = getattr(self.backend, "voice_action", None)
+        if not callable(act):
+            return {"ok": False, "error": "this window does not own the voice"}
+        return act(body)
 
     def apply_theme(self, body: dict[str, Any]) -> dict[str, Any]:
         """Adopt the colours the operator just chose, and tell every window.

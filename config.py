@@ -123,12 +123,22 @@ class Settings(BaseSettings):
     # The call words. Speech recognition never returns the dots, so "Hello J.A.R.V.I.S."
     # arrives as "hello jarvis" -- normalisation in voice.py collapses both forms to the same
     # key before matching. Devanagari variants let the operator wake him in Hindi.
+    #: The call phrases. Several spellings of each, because a recogniser hands
+    #: back what it heard rather than what was meant: "paay laagu" is as likely
+    #: to arrive as "pi lagu", and a greeting that only works when the microphone
+    #: spells it your way is not a greeting.
     WAKE_WORDS: List[str] = Field(
         default_factory=lambda: [
             "hello jarvis",
             "namaste jarvis",
             "नमस्ते जार्विस",
             "हैलो जार्विस",
+            "pi lagu jarvis",
+            "pay lagu jarvis",
+            "paay laagu jarvis",
+            "pai lagu jarvis",
+            "पाय लागू जार्विस",
+            "पाय लागु जार्विस",
         ]
     )
     WAKE_WORD_REQUIRED: bool = True

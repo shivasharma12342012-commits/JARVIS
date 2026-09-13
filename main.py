@@ -618,6 +618,14 @@ class JarvisApplication:
     # -- voice callbacks (all fire on the voice thread) ---------------------------------
     def _on_wake(self) -> None:
         """Acknowledge the wake word before the recogniser opens for the command."""
+        # A window opened onto this session lights up; the terminal HUD has no
+        # such method and _mirrored simply passes over it.
+        announce = getattr(self.hud, "wake", None)
+        if callable(announce):
+            try:
+                announce()
+            except Exception:
+                LOG.debug("Could not announce the wake to the window", exc_info=True)
         line = prompts.personalise(random.choice(prompts.WAKE_ACKNOWLEDGEMENTS))
         self._log_system(line, "info")
         # Blocking so the acknowledgement finishes before the microphone reopens;

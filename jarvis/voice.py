@@ -1214,6 +1214,17 @@ class VoiceSystem:
             self._log("Listening — wake word not required.", "info")
         return True
 
+    @property
+    def listening(self) -> bool:
+        """Whether the background listener currently holds the microphone.
+
+        The window draws its microphone control from this, and a control that
+        shows the wrong state is worse than no control: you press it to start
+        listening and it stops.
+        """
+        with self._listen_lock:
+            return self._bg_stopper is not None
+
     def stop_listening(self) -> None:
         """Release the microphone. Idempotent."""
         with self._listen_lock:
