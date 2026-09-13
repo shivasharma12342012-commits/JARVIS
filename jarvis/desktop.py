@@ -66,6 +66,7 @@ from typing import Any, Callable, Iterable
 from urllib.parse import parse_qs, urlparse
 
 from jarvis import auth
+from jarvis import greeting as greeting_mod
 from config import (
     STATE_IDLE,
     STATE_LISTENING,
@@ -1791,7 +1792,13 @@ class _Handler(BaseHTTPRequestHandler):
         boot = self.app.state_payload()
         identity = self._identity()
         boot["identity"] = identity.to_dict() if identity is not None else None
-        html = html.replace("__JARVIS_BOOT__", json.dumps(boot))
+        # Taken here rather than in state_payload: a greeting belongs to a window
+        # opening, and /api/state is asked more than once a session. Substituted
+        # into the markup as well as the payload so the first paint already has
+        # it, the same way the theme does.
+        boot["greeting"] = self.app.greeter.current()
+        html = html.replace("__JARVIS_BOOT__", _json_for_script(boot))
+        html = html.replace("__JARVIS_GREETING__", _escape(boot["greeting"]))
         html = html.replace("__JARVIS_THEME_CSS__", self.app.theme.css())
         # The stylesheet and the script are subresources: the browser fetches
         # them itself, with no chance to attach a header, so the token has to
@@ -1808,9 +1815,10 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(500, b"The sign-in page is missing from this install.", "text/plain")
             return
         html = html.replace("__JARVIS_THEME_CSS__", self.app.theme.css())
-        html = html.replace("__JARVIS_SIGNIN__", json.dumps(dict(
+        html = html.replace("__JARVIS_SIGNIN__", _json_for_script(dict(
             auth.describe(),
             agent=settings.AGENT_NAME,
+            # Google's own words, when a sign-in was refused.
             error=error,
             lockedFor=round(self.app.throttle.locked_for(), 1),
         )))
@@ -1866,6 +1874,38 @@ class _Handler(BaseHTTPRequestHandler):
             self.app.hub.unsubscribe(sink)
             self.app.on_client_change()
             self.close_connection = True
+
+
+def _json_for_script(payload: dict[str, Any]) -> str:
+    """JSON safe to inline inside a ``<script>`` element.
+
+    ``json.dumps`` does not escape ``<``, and an HTML parser ends a script at the
+    first ``</script>`` it sees no matter where it appears \u2014 inside a string
+    literal included. The moment any part of this payload is text somebody else
+    wrote, that is a way to run code in the page. The greeting is written by a
+    language model and the sign-in page carries Google's error text, so that
+    moment has arrived.
+
+    All four replacements are ordinary JSON escapes, so the value the browser
+    parses is byte-for-byte the one that went in. U+2028 and U+2029 are here
+    because they are legal in JSON and illegal in a JavaScript string literal.
+    """
+    return (json.dumps(payload)
+            .replace("<", "\\u003c").replace(">", "\\u003e")
+            .replace("&", "\\u0026")
+            .replace("\u2028", "\\u2028").replace("\u2029", "\\u2029"))
+
+
+def _escape(text: str) -> str:
+    """Make a model-written line safe to drop straight into the markup.
+
+    The greeting comes from a language model, which is to say from something
+    that will happily return angle brackets, and it is substituted into the page
+    rather than set through the DOM. One escape here is the whole defence.
+    """
+    return (str(text)
+            .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            .replace('"', "&quot;"))
 
 
 def _query(path: str) -> dict[str, list[str]]:
@@ -2026,6 +2066,10 @@ class DesktopApp:
         self.throttle = auth.Throttle()
         #: The Google flow, holding at most one pending PKCE exchange.
         self.google = auth.Google()
+        #: The line the window opens on. Built here rather than in the backend
+        #: because an attached window wants one too, and the terminal session
+        #: behind it has already said its own.
+        self.greeter = greeting_mod.Greeter(on_fresh=self._on_fresh_greeting)
         self.open_window_on_start = open_window_on_start
         #: Standalone windows own the process, so closing the last one should
         #: end it. An attached window must not take the terminal down with it.
@@ -2059,6 +2103,10 @@ class DesktopApp:
         )
         self._server_thread.start()
         LOG.info("Desktop app serving on %s", self.url.split("?")[0])
+        # After the backend, because that is where the agent that writes the next
+        # greeting lives; before the window, because the line for *this* launch
+        # was written on a previous one and is already waiting.
+        self._start_greeter()
 
         if self.open_window_on_start:
             self._window_kind = open_window(self.url, f"{settings.AGENT_NAME} Desktop")
@@ -2217,6 +2265,28 @@ class DesktopApp:
         except Exception:
             LOG.debug("Backend would not describe itself", exc_info=True)
         return payload
+
+    # -- the greeting -------------------------------------------------------------------
+    def _on_fresh_greeting(self, line: str) -> None:
+        """A newly written line arrived while the welcome is still on screen."""
+        self.hub.publish("greeting", text=line)
+
+    def _start_greeter(self) -> None:
+        """Point the greeter at whatever can talk to the model, and set it going.
+
+        The agent lives on the backend and only one kind of backend has one, so
+        this asks rather than assumes. With no agent the bank simply stops
+        filling, and the lines already in it keep being used.
+        """
+        self.greeter.agent = getattr(self.backend, "agent", None)
+        telemetry = None
+        monitor = getattr(self.backend, "monitor", None)
+        if monitor is not None:
+            try:
+                telemetry = monitor.snapshot()
+            except Exception:
+                LOG.debug("Could not read telemetry for the greeting", exc_info=True)
+        self.greeter.refresh(telemetry)
 
     # -- the voice, wherever it happens to live -----------------------------------------
     def voice_snapshot(self) -> dict[str, Any]:

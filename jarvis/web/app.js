@@ -738,6 +738,7 @@ const HANDLERS = {
   voice_status: (d) => { Logs.add('info', d.text); Voice.status(d.text); },
   protocol: (d) => { if (d.name) { toast('Protocol: ' + d.name); Logs.add('info', 'protocol: ' + d.name); } },
   warm: () => {},
+  greeting: (d) => Greeting.fresh(d.text),
   wake: (d) => {
     Voice.woke();
     Logs.add('info', 'woken' + (d && d.phrase ? ': ' + d.phrase : ''));
@@ -1824,6 +1825,40 @@ function toast(text) {
 }
 
 /* =============================================================================
+   The greeting
+
+   A different line every time the window opens, written by the model rather than
+   chosen from three fixed sentences. It is already in the boot payload, so it
+   costs nothing to show — the model wrote it on an earlier launch and it has
+   been waiting in a bank ever since.
+
+   If a newer one arrives while the welcome is still on screen, it crosses over
+   to that. Replacing text under somebody's eyes is normally rude; here the
+   greeting is the one thing on the page that nobody is part-way through acting
+   on, and a line written a moment ago beats one written yesterday.
+   ============================================================================= */
+const Greeting = {
+  init() {
+    this.node = $('greeting');
+    if (BOOT.greeting) this.node.textContent = BOOT.greeting;
+  },
+
+  /* Only while the welcome is still up. Once there are messages in the
+     transcript the welcome is gone, and a greeting arriving late has missed. */
+  fresh(text) {
+    if (!text || !this.node || !this.node.isConnected) return;
+    if (this.node.textContent.trim() === String(text).trim()) return;
+    if (REDUCED) { this.node.textContent = text; return; }
+
+    this.node.classList.add('fading');
+    setTimeout(() => {
+      this.node.textContent = text;
+      this.node.classList.remove('fading');
+    }, 260);
+  },
+};
+
+/* =============================================================================
    Voice
 
    "Hello J.A.R.V.I.S.", "Namaste J.A.R.V.I.S.", "Pi lagu J.A.R.V.I.S." — and the
@@ -2324,6 +2359,7 @@ function boot() {
   Keys.init();
   Security.init();
   Voice.init();
+  Greeting.init();
   setState(BOOT.state || 'idle');
 
   // Only shown when there is something to sign out of. With the lock off the

@@ -846,6 +846,41 @@ that does not carry it or that claims a `Host` other than localhost. That last c
 not decoration: J.A.R.V.I.S. runs shell commands, so an unguarded local port would be a
 remote code execution hole for any page in the browser.
 
+## The line it opens on
+
+Every time the window opens it says something different.
+
+```
+                            J.A.R.V.I.S.
+
+   Evening, Sir. The workshop is warm and nothing is on fire.
+```
+
+The line is written by the model — not chosen from a list — and it knows the hour,
+the weekday and the name of the workspace it is looking at. If the battery is low or
+the processor is pinned, it may mention that instead of saying all is quiet.
+
+The catch is that a local model asked a question takes anywhere between two hundred
+milliseconds and never, and a window that waits for it is a window that hangs. So it
+does not wait. It keeps a **bank** of sixteen lines in `.jarvis_greetings.json`: opening
+the window takes one out and paints it immediately, then asks the model for a new one in
+the background and puts it in. When the model is quick the fresh line arrives while the
+welcome is still on screen and fades in over the old one — genuinely of this moment. When
+the model is slow, missing or mid-download you get a good line anyway and never notice.
+
+Lines are drawn at random rather than in turn, and never the one shown last, so two
+launches a minute apart do not read like a rota. The first launch after installing is the
+only one with an empty bank; it falls back to three shipped lines, and once the bank has
+filled you never see them again.
+
+Whatever the model returns is trimmed before it is shown — fenced blocks, "Here is a
+greeting:", quotation marks, markdown, and anything longer than two sentences. And it
+is escaped twice over, once for the markup and once for the inline script it is also
+written into, because a language model will put a `</script>` in the middle of a
+sentence if the conversation happened to wander that way.
+
+Set `GREETING_FROM_MODEL=false` to keep the shipped lines and never ask the model.
+
 ## Signing in
 
 Nothing is locked when you install it, and nothing has to be configured to lock
@@ -928,6 +963,7 @@ python main.py clear-password
 
 | Key | Default | |
 |---|---|---|
+| `GREETING_FROM_MODEL` | `true` | Whether the model writes the welcome line |
 | `DESKTOP_AUTH_MODE` | *(follows what is set up)* | `off` · `password` · `google` · `any` |
 | `DESKTOP_AUTH_TTL_HOURS` | `12` | A session that was not asked to be remembered |
 | `GOOGLE_CLIENT_ID` | *(empty)* | Overrides whatever was pasted into the panel |
@@ -1170,8 +1206,8 @@ pip install pytest pytest-asyncio
 pytest -q
 ```
 
-Four hundred and nine tests, no Ollama daemon and no microphone, well
-under two minutes. Most need no browser either; the handful in
+Four hundred and fifty-nine tests, no Ollama daemon and no microphone, a
+little over two minutes. Most need no browser either; the handful in
 `tests/test_ui.py` drive the real front end through Playwright and skip
 themselves cleanly when it is not installed. The model is a scripted fake and the HUD is driven
 through Textual's pilot, so the suite covers streaming, tool parallelism,
@@ -1196,7 +1232,9 @@ interface rather than by reading it:
 · `Esc` does not interrupt a running turn;
 · a collapsed pane paints nothing over the pane beside it — measured on what is
   actually painted, since `getBoundingClientRect` ignores `overflow: hidden`;
-· a turn asked from the Code surface appears on the Code surface.
+· a turn asked from the Code surface appears on the Code surface;
+· the welcome line differs from one window to the next, and a greeting carrying
+  `</script><script>` cannot run code in the page.
 
 That includes the security properties — no token, wrong token,
 a forged `Host`, a cross-origin request and `../` in a static path are each

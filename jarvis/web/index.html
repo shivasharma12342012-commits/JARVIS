@@ -184,8 +184,11 @@
     <div class="transcript" id="transcript" role="log" aria-live="polite" aria-label="Conversation">
       <div class="welcome" id="welcome">
         <h1 class="wordmark">J.A.R.V.I.S.</h1>
-        <p class="wordmark-sub">Ask a question, paste an error, or point me at a repository.
-           I read code, run instruments, and watch the machine while you work.</p>
+        <!-- Written by the model, and different every time the window opens.
+             The text is substituted server-side so the first paint already has
+             it; if a newer one arrives while you are still reading this, it
+             fades across to that instead. -->
+        <p class="wordmark-sub" id="greeting">__JARVIS_GREETING__</p>
         <div class="suggestions" id="suggestions"></div>
       </div>
     </div>

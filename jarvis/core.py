@@ -471,6 +471,45 @@ class JarvisAgent:
                     self._client = ollama.Client(host=settings.OLLAMA_HOST)
             return self._client
 
+    def aside(self, instruction: str, *, system: str = "", temperature: float = 0.95,
+              limit: int = 120, timeout: float | None = None) -> str:
+        """Ask the model one question, outside the conversation.
+
+        No tools, no streaming, and nothing written to memory: the reply is not
+        part of what the operator is talking about and must not turn up in the
+        next turn's context. Used for the things J.A.R.V.I.S. says rather than
+        answers \u2014 the greeting the window opens on, to begin with.
+
+        Returns "" for every failure. A model that is not running is a perfectly
+        ordinary state of affairs, and the callers all have something to say
+        without it.
+        """
+        messages: list[dict[str, Any]] = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": instruction})
+
+        try:
+            client = self._get_client()
+            response = client.chat(
+                model=settings.MODEL_NAME,
+                messages=messages,
+                stream=False,
+                options={
+                    # Warmer than a normal turn on purpose: this is asked for a
+                    # line that has not been said before, and the default
+                    # temperature returns the same three sentences forever.
+                    "temperature": temperature,
+                    "num_predict": limit,
+                },
+            )
+        except Exception:
+            _LOG.debug("aside failed", exc_info=True)
+            return ""
+
+        message = _field(response, "message") or {}
+        return str(_field(message, "content") or "").strip()
+
     # -- preflight ---------------------------------------------------------------
     def ensure_model(self) -> tuple[bool, str]:
         """Check the daemon is up and the configured model is installed.

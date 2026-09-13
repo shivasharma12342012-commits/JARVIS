@@ -193,6 +193,12 @@ class Settings(BaseSettings):
     #: you opened and grew must still be saveable.
     DESKTOP_EDIT_MAX_BYTES: int = 2_000_000
 
+    #: Whether the window opens on a line the model wrote, rather than one of
+    #: three fixed sentences. Kept in a bank so it costs nothing at startup: the
+    #: line shown was written on an earlier launch, and a new one is written in
+    #: the background while you read it.
+    GREETING_FROM_MODEL: bool = True
+
     # -- Who may open the window --------------------------------------------------
     #: "off" (the default), "password", "google", or "any" for either. The window
     #: has always been loopback-only and token-gated, which answers whether
