@@ -131,10 +131,17 @@ def hash_password(plain: str) -> dict[str, Any]:
     }
 
 
+#: The shortest thing worth calling a lock. Four, not eight, because this is a
+#: lock on a laptop rather than a login to a service: six wrong guesses a minute
+#: means even a four-digit PIN takes about a day to walk, and a person who will
+#: not set a PIN sets nothing at all.
+MIN_SECRET = 4
+
+
 def set_password(plain: str) -> bool:
-    """Store a password. The password itself is not kept, only a hash of it."""
-    if len(plain) < 8:
-        raise ValueError("a password shorter than eight characters is not worth having")
+    """Store a password or PIN. The secret itself is not kept, only a hash."""
+    if len(plain) < MIN_SECRET:
+        raise ValueError(f"that needs to be at least {MIN_SECRET} characters")
     data = _read()
     data["password"] = hash_password(plain)
     return _write(data)
@@ -228,11 +235,23 @@ class Sessions:
             return self._ttl
         return float(getattr(settings, "DESKTOP_AUTH_TTL_HOURS", 12)) * 3600.0
 
-    def mint(self, identity: Identity) -> str:
+    @property
+    def remembered_ttl(self) -> float:
+        """"Keep me signed in" — a week, not a working day.
+
+        Still only until J.A.R.V.I.S. restarts, because sessions live in memory
+        and nothing about them is written down. On a personal machine that is
+        the right trade: the lock is for the laptop left open, not for the
+        laptop rebooted.
+        """
+        return max(self.ttl, 7 * 24 * 3600.0)
+
+    def mint(self, identity: Identity, remember: bool = False) -> str:
         token = secrets.token_urlsafe(32)
+        lifetime = self.remembered_ttl if remember else self.ttl
         with self._lock:
             self._sweep()
-            self._live[token] = (identity, time.monotonic() + self.ttl)
+            self._live[token] = (identity, time.monotonic() + lifetime)
         LOG.info("signed in: %s via %s", identity.subject, identity.method)
         return token
 
@@ -326,11 +345,17 @@ class Google:
 
     @property
     def client_id(self) -> str:
-        return str(getattr(settings, "GOOGLE_CLIENT_ID", "") or "").strip()
+        return google_client_id()
 
     @property
     def client_secret(self) -> str:
-        return str(getattr(settings, "GOOGLE_CLIENT_SECRET", "") or "").strip()
+        from_settings = str(getattr(settings, "GOOGLE_CLIENT_SECRET", "") or "").strip()
+        if from_settings:
+            return from_settings
+        stored = _read().get("google")
+        if isinstance(stored, dict):
+            return str(stored.get("client_secret", "") or "").strip()
+        return ""
 
     @property
     def configured(self) -> bool:
@@ -468,10 +493,77 @@ class Google:
 # ══════════════════════════════════════════════════════════════════════════════════════
 # What the server asks
 # ══════════════════════════════════════════════════════════════════════════════════════
+MODES = ("off", "password", "google", "any")
+
+
+def _configured_in_env(name: str) -> bool:
+    """Whether a setting was actually spelled out, rather than left at its default.
+
+    ``model_fields_set`` comes back empty on this settings object, so the two
+    places a value can really come from are checked directly. It matters because
+    somebody who wrote the setting down meant it, and the window must not
+    quietly overrule them from a panel.
+    """
+    if name in os.environ:
+        return True
+    env_file = PROJECT_ROOT / ".env"
+    try:
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if stripped and not stripped.startswith("#") and stripped.split("=", 1)[0].strip() == name:
+                return True
+    except OSError:
+        pass
+    return False
+
+
+def stored_mode() -> str:
+    """What the window was last told to do from its own settings panel."""
+    chosen = str(_read().get("mode", "") or "").strip().lower()
+    return chosen if chosen in MODES else ""
+
+
+def set_mode(chosen: str) -> bool:
+    """Remember a mode chosen in the window. Written here, not to ``.env``."""
+    if chosen not in MODES:
+        raise ValueError(f"{chosen!r} is not one of {', '.join(MODES)}")
+    data = _read()
+    data["mode"] = chosen
+    return _write(data)
+
+
 def mode() -> str:
-    """``off``, ``password``, ``google`` or ``any``."""
-    chosen = str(getattr(settings, "DESKTOP_AUTH_MODE", "off") or "off").strip().lower()
-    return chosen if chosen in ("off", "password", "google", "any") else "off"
+    """What the lock is currently doing: ``off``, ``password``, ``google``, ``any``.
+
+    Three sources, in order of who gets the last word:
+
+    1. ``DESKTOP_AUTH_MODE``, when somebody actually wrote it down. A setting
+       spelled out in ``.env`` or the environment is a decision, and the window
+       does not get to overrule it from a panel.
+    2. What was last chosen in the window's own Security panel.
+    3. Otherwise: whatever has been set up. A password on file means the window
+       is locked; nothing on file means it is not. That is the whole mental
+       model for anyone who never opens a terminal — set a password and it
+       locks, remove it and it does not.
+    """
+    if _configured_in_env("DESKTOP_AUTH_MODE"):
+        chosen = str(getattr(settings, "DESKTOP_AUTH_MODE", "off") or "off").strip().lower()
+        if chosen in MODES:
+            return chosen
+
+    remembered = stored_mode()
+    if remembered:
+        return remembered
+
+    password = has_password()
+    google = bool(google_client_id())
+    if password and google:
+        return "any"
+    if password:
+        return "password"
+    if google:
+        return "google"
+    return "off"
 
 
 def required() -> bool:
@@ -479,20 +571,62 @@ def required() -> bool:
     return mode() != "off"
 
 
+def google_client_id() -> str:
+    """The OAuth client, from the setting when there is one, else from the panel."""
+    from_settings = str(getattr(settings, "GOOGLE_CLIENT_ID", "") or "").strip()
+    if from_settings:
+        return from_settings
+    stored = _read().get("google")
+    if isinstance(stored, dict):
+        return str(stored.get("client_id", "") or "").strip()
+    return ""
+
+
+def set_google_client(client_id: str, client_secret: str = "") -> bool:
+    """Remember a Google client pasted into the window's Security panel."""
+    data = _read()
+    google = data.get("google") if isinstance(data.get("google"), dict) else {}
+    google["client_id"] = client_id.strip()
+    if client_secret.strip():
+        google["client_secret"] = client_secret.strip()
+    else:
+        google.pop("client_secret", None)
+    data["google"] = google
+    return _write(data)
+
+
+def clear_google_client() -> bool:
+    data = _read()
+    google = data.get("google") if isinstance(data.get("google"), dict) else {}
+    google.pop("client_id", None)
+    google.pop("client_secret", None)
+    data["google"] = google
+    return _write(data)
+
+
 def offers() -> dict[str, bool]:
     """Which ways in the sign-in page should show."""
     which = mode()
-    google = Google()
+    configured = bool(google_client_id())
     return {
         "password": which in ("password", "any"),
-        "google": which in ("google", "any") and google.configured,
-        # First run with the lock on and nothing set: the page says so rather
-        # than presenting a form that can never be satisfied.
+        "google": which in ("google", "any") and configured,
         "passwordSet": has_password(),
-        "googleConfigured": google.configured,
+        "googleConfigured": configured,
     }
 
 
 def describe() -> dict[str, Any]:
-    """Everything the sign-in page needs to draw itself."""
-    return dict(offers(), mode=mode(), required=required())
+    """Everything the sign-in page and the Security panel need to draw themselves."""
+    return dict(
+        offers(),
+        mode=mode(),
+        required=required(),
+        # Whether the window is allowed to change its own mind. A mode written
+        # into .env is somebody's decision and the panel says so rather than
+        # offering a switch that would not take.
+        managed=_configured_in_env("DESKTOP_AUTH_MODE"),
+        googleManaged=bool(str(getattr(settings, "GOOGLE_CLIENT_ID", "") or "").strip()),
+        minSecret=MIN_SECRET,
+        accounts=allowed_google_accounts(),
+    )

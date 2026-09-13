@@ -865,6 +865,60 @@ input[type="range"]::-moz-range-thumb {
   color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
+/* ── the Security panel ───────────────────────────────────────
+   Setting a password locks the window; removing it unlocks it. Nobody should
+   have to open a terminal or edit a dotfile to reach either. */
+.lock-state {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 10px;
+  padding: 8px 10px; border-radius: var(--radius-sm);
+  border: 1px solid var(--line); background: var(--surface-2);
+  font-size: 12px; color: var(--text-dim);
+}
+.lock-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--text-faint); }
+.lock-state.on .lock-dot { background: var(--ok); }
+.lock-state.on { color: var(--text); }
+
+.lock-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.lock-row .mini-btn.wide.primary {
+  background: var(--accent); color: var(--on-accent); border-color: transparent;
+}
+.lock-row .mini-btn.wide.primary:hover { filter: brightness(1.08); }
+
+.lock-form { margin: 10px 0 4px; display: grid; gap: 8px; }
+.lock-field { display: grid; gap: 4px; }
+.lock-field > span {
+  font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--text-faint);
+}
+.lock-field input {
+  height: 30px; padding: 0 9px; border-radius: var(--radius-sm);
+  border: 1px solid var(--line); background: var(--bg-deep); color: var(--text);
+  font: 400 13px var(--font-ui); outline: none;
+  transition: border-color var(--fast) var(--ease), box-shadow var(--fast) var(--ease);
+}
+.lock-field input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.lock-note { margin: 0; font-size: 11.5px; line-height: 1.5; color: var(--text-dim); }
+.lock-note.bad { color: var(--danger); }
+.lock-note.good { color: var(--ok); }
+
+.lock-more { margin-top: 14px; }
+.lock-more summary {
+  cursor: pointer; font-size: 12px; color: var(--text-dim); padding: 4px 0;
+  list-style: none;
+}
+.lock-more summary::-webkit-details-marker { display: none; }
+.lock-more summary::before { content: "\203a "; display: inline-block; width: 12px;
+                             transition: transform var(--fast) var(--ease); }
+.lock-more[open] summary::before { transform: rotate(90deg); }
+.lock-more summary:hover { color: var(--text); }
+.studio-steps {
+  margin: 6px 0 10px; padding-left: 18px; font-size: 11.5px; line-height: 1.7;
+  color: var(--text-dim);
+}
+.studio-steps a { color: var(--accent-text); }
+
 /* ── command palette and the keyboard sheet ───────────────────────────────── */
 .palette-wrap {
   position: fixed; inset: 0; z-index: 60; display: flex; justify-content: center;

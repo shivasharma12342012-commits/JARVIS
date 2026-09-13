@@ -105,6 +105,12 @@ button[disabled] { opacity: .55; cursor: default; }
 .note code { font-family: var(--font-mono); font-size: 11px; }
 .note[hidden] { display: none; }
 .foot { margin: 18px 0 0; text-align: center; font-size: 10.5px; color: var(--text-faint); }
+.check {
+  display: flex; align-items: center; gap: 8px; margin: 0 0 14px;
+  font-size: 12px; color: var(--text-dim); text-transform: none; letter-spacing: 0;
+  cursor: pointer; user-select: none;
+}
+.check input { width: 15px; height: 15px; margin: 0; accent-color: var(--accent); cursor: pointer; }
 
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }
@@ -124,12 +130,25 @@ button[disabled] { opacity: .55; cursor: default; }
   </div>
 
   <h1 id="wordmark">J.A.R.V.I.S.</h1>
-  <p class="sub">This window is locked.</p>
+  <p class="sub" id="sub">This window is locked.</p>
 
   <form id="password-form" hidden>
-    <label for="password">Password</label>
+    <label for="password" id="password-label">Password</label>
     <input type="password" id="password" autocomplete="current-password"
            autofocus spellcheck="false" aria-describedby="message">
+
+    <!-- Only on first run, when there is no password yet and this form is
+         creating one rather than checking one. -->
+    <div id="confirm-wrap" hidden>
+      <label for="confirm">Type it again</label>
+      <input type="password" id="confirm" autocomplete="new-password" spellcheck="false">
+    </div>
+
+    <label class="check" for="remember">
+      <input type="checkbox" id="remember" checked>
+      <span>Keep me signed in on this computer</span>
+    </label>
+
     <button type="submit" class="primary" id="unlock">Unlock</button>
   </form>
 
@@ -165,29 +184,38 @@ function say(text, bad) {
 
 $('wordmark').textContent = INFO.agent || 'J.A.R.V.I.S.';
 
+/* Two jobs, one form. With a password on file it checks one; on first run, with
+   the lock asked for and nothing set yet, it creates one. Sending somebody to a
+   terminal to type `set-password` is not a sign-in flow, it is a wall. */
+const first = INFO.password && !INFO.passwordSet;
 const wantsPassword = INFO.password;
 const wantsGoogle = INFO.google;
+
 $('password-form').hidden = !wantsPassword;
 $('google').hidden = !wantsGoogle;
 $('rule').hidden = !(wantsPassword && wantsGoogle);
+$('confirm-wrap').hidden = !first;
 
+if (first) {
+  $('sub').textContent = 'Choose a password for this window.';
+  $('password-label').textContent = 'New password or PIN';
+  $('password').autocomplete = 'new-password';
+  $('unlock').textContent = 'Set it and continue';
+  say('At least ' + (INFO.minSecret || 4) + ' characters. It never leaves this ' +
+      'computer, and it is stored as a hash \u2014 not even J.A.R.V.I.S. can read it back.');
+}
 if (INFO.error) say(INFO.error, true);
-else if (wantsPassword && !INFO.passwordSet) {
-  // A form that cannot be satisfied is worse than no form. Say what to run.
-  $('password-form').hidden = true;
-  $('rule').hidden = true;
-  say('No password has been set yet. Run <code>python main.py set-password</code> ' +
-      'in a terminal, then reload this page.');
-} else if (!wantsPassword && !wantsGoogle) {
-  say('Sign-in is switched on, but neither a password nor a Google client is ' +
-      'configured. Check <code>DESKTOP_AUTH_MODE</code> in your .env.', true);
+if (!wantsPassword && !wantsGoogle) {
+  say('Sign-in is switched on, but nothing is set up to sign in with. Start ' +
+      'J.A.R.V.I.S. without <code>DESKTOP_AUTH_MODE</code> set, and use the ' +
+      'Security panel in the window instead.', true);
 }
 
 let locked = Number(INFO.lockedFor || 0);
 const unlock = $('unlock');
 
 function countdown() {
-  if (locked <= 0) { unlock.disabled = false; unlock.textContent = 'Unlock'; return; }
+  if (locked <= 0) { unlock.disabled = false; unlock.textContent = first ? 'Set it and continue' : 'Unlock'; return; }
   unlock.disabled = true;
   unlock.textContent = 'Locked for ' + Math.ceil(locked) + 's';
   locked -= 1;
@@ -199,17 +227,29 @@ $('password-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   const value = $('password').value;
   if (!value) return;
+  if (first) {
+    if (value.length < (INFO.minSecret || 4)) {
+      say('That needs to be at least ' + (INFO.minSecret || 4) + ' characters.', true);
+      return;
+    }
+    if (value !== $('confirm').value) {
+      say('Those two do not match.', true);
+      $('confirm').value = '';
+      $('confirm').focus();
+      return;
+    }
+  }
   unlock.disabled = true;
-  unlock.textContent = 'Checking…';
+  unlock.textContent = first ? 'Setting it…' : 'Checking…';
   try {
-    const response = await fetch('/api/auth/password', {
+    const response = await fetch(first ? '/api/auth/setup' : '/api/auth/password', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password: value }),
+      body: JSON.stringify({ password: value, remember: $('remember').checked }),
     });
     const result = await response.json();
     if (result.ok) {
-      unlock.textContent = 'Welcome back';
+      unlock.textContent = first ? 'Done' : 'Welcome back';
       // A full navigation, not a fetch: the page that comes back is the
       // application, and it needs to replace this one.
       location.replace('/');
@@ -220,11 +260,11 @@ $('password-form').addEventListener('submit', async (event) => {
     $('password').focus();
     locked = Number(result.lockedFor || 0);
     if (locked > 0) countdown();
-    else { unlock.disabled = false; unlock.textContent = 'Unlock'; }
+    else { unlock.disabled = false; unlock.textContent = first ? 'Set it and continue' : 'Unlock'; }
   } catch (err) {
     say('Could not reach J.A.R.V.I.S.: ' + err.message, true);
     unlock.disabled = false;
-    unlock.textContent = 'Unlock';
+    unlock.textContent = first ? 'Set it and continue' : 'Unlock';
   }
 });
 </script>

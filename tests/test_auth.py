@@ -69,8 +69,16 @@ def test_a_password_can_be_removed():
 
 def test_a_very_short_password_is_refused():
     with pytest.raises(ValueError):
-        auth.set_password("short")
+        auth.set_password("123")
     assert auth.has_password() is False
+
+
+def test_a_four_character_pin_is_allowed():
+    """This is a lock on a laptop, not a login to a service. A person who will
+    not set a PIN sets nothing at all, and six guesses a minute makes ten
+    thousand combinations about a day's work."""
+    auth.set_password("1234")
+    assert auth.verify_password("1234") is True
 
 
 def test_verifying_against_nothing_is_false_rather_than_an_error():
@@ -157,6 +165,7 @@ def test_a_session_can_be_revoked():
 def test_the_mode_decides_what_the_lock_screen_offers(monkeypatch, mode, password, google):
     from config import settings
 
+    monkeypatch.setenv("DESKTOP_AUTH_MODE", mode)
     monkeypatch.setattr(settings, "DESKTOP_AUTH_MODE", mode, raising=False)
     monkeypatch.setattr(settings, "GOOGLE_CLIENT_ID", "client.apps.googleusercontent.com",
                         raising=False)
@@ -169,6 +178,7 @@ def test_the_mode_decides_what_the_lock_screen_offers(monkeypatch, mode, passwor
 def test_google_is_not_offered_without_a_client_id(monkeypatch):
     from config import settings
 
+    monkeypatch.setenv("DESKTOP_AUTH_MODE", "any")
     monkeypatch.setattr(settings, "DESKTOP_AUTH_MODE", "any", raising=False)
     assert auth.offers()["google"] is False
 
@@ -176,6 +186,7 @@ def test_google_is_not_offered_without_a_client_id(monkeypatch):
 def test_an_unknown_mode_falls_back_to_off(monkeypatch):
     from config import settings
 
+    monkeypatch.setenv("DESKTOP_AUTH_MODE", "nonsense")
     monkeypatch.setattr(settings, "DESKTOP_AUTH_MODE", "nonsense", raising=False)
     assert auth.mode() == "off"
     assert auth.required() is False
@@ -337,3 +348,89 @@ def test_finishing_without_a_client_id_says_so(monkeypatch):
     monkeypatch.setattr(settings, "GOOGLE_CLIENT_ID", "", raising=False)
     identity, why = auth.Google().finish("code", "state", REDIRECT)
     assert identity is None and "not configured" in why
+
+
+# ══ the lock follows what is set up ═══════════════════════════════════════════════════
+# The whole model for somebody who never opens a terminal: set a password and
+# the window locks; take it off and it does not. No mode to choose, no file to
+# edit, no restart.
+def test_setting_a_password_locks_the_window():
+    assert auth.required() is False
+    auth.set_password("1234")
+    assert auth.mode() == "password"
+    assert auth.required() is True
+
+
+def test_removing_it_unlocks_the_window():
+    auth.set_password("1234")
+    auth.clear_password()
+    assert auth.mode() == "off"
+    assert auth.required() is False
+
+
+def test_a_google_client_alone_locks_the_window_too():
+    auth.set_google_client("abc.apps.googleusercontent.com")
+    assert auth.mode() == "google"
+    assert auth.google_client_id() == "abc.apps.googleusercontent.com"
+
+
+def test_both_set_up_means_either_will_do():
+    auth.set_password("1234")
+    auth.set_google_client("abc.apps.googleusercontent.com")
+    assert auth.mode() == "any"
+
+
+def test_a_choice_made_in_the_panel_is_remembered():
+    auth.set_password("1234")
+    auth.set_mode("off")
+    assert auth.mode() == "off"
+    assert auth.required() is False
+    auth.set_mode("password")
+    assert auth.required() is True
+
+
+def test_a_mode_written_down_beats_the_panel(monkeypatch):
+    """Somebody who wrote it in .env meant it, and a panel must not overrule them."""
+    auth.set_password("1234")
+    auth.set_mode("off")
+    monkeypatch.setenv("DESKTOP_AUTH_MODE", "password")
+    from config import settings
+    monkeypatch.setattr(settings, "DESKTOP_AUTH_MODE", "password", raising=False)
+    assert auth.mode() == "password"
+    assert auth.describe()["managed"] is True
+
+
+def test_the_panel_knows_when_it_is_not_in_charge(monkeypatch):
+    assert auth.describe()["managed"] is False
+    monkeypatch.setenv("DESKTOP_AUTH_MODE", "off")
+    assert auth.describe()["managed"] is True
+
+
+def test_an_unknown_mode_cannot_be_stored():
+    with pytest.raises(ValueError):
+        auth.set_mode("sideways")
+
+
+def test_a_google_client_can_be_pasted_in_and_taken_out():
+    auth.set_google_client("abc.apps.googleusercontent.com", "a-secret")
+    assert auth.Google().client_secret == "a-secret"
+    auth.clear_google_client()
+    assert auth.google_client_id() == ""
+    assert auth.Google().configured is False
+
+
+def test_the_settings_client_wins_over_a_pasted_one(monkeypatch):
+    from config import settings
+
+    auth.set_google_client("pasted.apps.googleusercontent.com")
+    monkeypatch.setattr(settings, "GOOGLE_CLIENT_ID", "env.apps.googleusercontent.com",
+                        raising=False)
+    assert auth.google_client_id() == "env.apps.googleusercontent.com"
+    assert auth.describe()["googleManaged"] is True
+
+
+def test_keep_me_signed_in_lasts_longer_than_a_working_day():
+    sessions = auth.Sessions(ttl=3600.0)
+    assert sessions.remembered_ttl >= 7 * 24 * 3600.0
+    remembered = sessions.mint(auth.Identity("password", "operator"), remember=True)
+    assert sessions.resolve(remembered) is not None

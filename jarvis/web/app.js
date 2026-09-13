@@ -1820,6 +1820,155 @@ function toast(text) {
 }
 
 /* =============================================================================
+   Security
+
+   The whole lock, in one panel. Setting a password locks the window; removing
+   it unlocks it. There is no mode to choose, no file to edit and no command to
+   run, because the people who will use this are not the people who wrote it.
+   ============================================================================= */
+const Security = {
+  state: {},
+
+  init() {
+    this.state = BOOT.auth || {};
+    $('btn-set-password').onclick = () => this.form(auth().passwordSet ? 'change' : 'set');
+    $('btn-remove-password').onclick = () => this.form('remove');
+    $('btn-lock-cancel').onclick = () => this.hideForm();
+    $('btn-lock-now').onclick = () => this.lockNow();
+    $('lock-form').addEventListener('submit', (event) => { event.preventDefault(); this.save(); });
+    $('btn-google-save').onclick = () => this.saveGoogle();
+    $('btn-google-clear').onclick = () => this.saveGoogle(true);
+    this.render();
+
+    function auth() { return Security.state || {}; }
+  },
+
+  render() {
+    const state = this.state || {};
+    const locked = !!state.required;
+    const set = !!state.passwordSet;
+
+    $('lock-state').classList.toggle('on', locked);
+    $('lock-say').textContent = locked
+      ? (set && state.googleConfigured
+          ? 'Locked. Password or Google.'
+          : set ? 'Locked. It asks for your password.' : 'Locked. It asks for Google.')
+      : 'This window is not locked. Anyone who opens it is in.';
+
+    $('lock-managed').hidden = !state.managed;
+    $('btn-set-password').textContent = set ? 'Change password' : 'Set a password';
+    $('btn-set-password').hidden = !!state.managed && !locked;
+    $('btn-remove-password').hidden = !set;
+    $('btn-lock-now').hidden = !locked;
+
+    const client = $('google-client');
+    if (state.googleManaged) {
+      client.value = 'set in your .env';
+      client.disabled = true;
+    }
+    $('btn-google-clear').hidden = !state.googleConfigured || !!state.googleManaged;
+    $('btn-google-save').hidden = !!state.googleManaged;
+  },
+
+  /* One form, three jobs: set the first password, change an existing one, or
+     take it off. Which fields show is the only difference between them. */
+  form(kind) {
+    this.kind = kind;
+    const removing = kind === 'remove';
+    $('lock-form').hidden = false;
+    $('current-wrap').hidden = !this.state.passwordSet;
+    $('new-wrap').hidden = removing;
+    $('again-wrap').hidden = removing;
+    $('new-label').textContent = this.state.passwordSet ? 'New password or PIN' : 'Password or PIN';
+    $('btn-lock-save').textContent = removing ? 'Remove the password' : 'Save';
+    this.note(removing
+      ? 'The window will stop asking for anything. Anyone who opens it is in.'
+      : 'At least ' + (this.state.minSecret || 4) + ' characters. It never leaves this ' +
+        'computer, and it is kept as a hash \u2014 nothing can read it back.');
+    // After the panel has laid out, or the focus lands on a hidden field.
+    setTimeout(() => {
+      (this.state.passwordSet ? $('lock-current') : $('lock-new')).focus();
+    }, 30);
+  },
+
+  hideForm() {
+    $('lock-form').hidden = true;
+    ['lock-current', 'lock-new', 'lock-again'].forEach((id) => { $(id).value = ''; });
+    this.note('');
+  },
+
+  note(text, tone) {
+    const node = $('lock-note');
+    node.textContent = text;
+    node.hidden = !text;
+    node.className = 'lock-note' + (tone ? ' ' + tone : '');
+  },
+
+  async save() {
+    const removing = this.kind === 'remove';
+    const wanted = removing ? '' : $('lock-new').value;
+    if (!removing) {
+      if (wanted.length < (this.state.minSecret || 4)) {
+        this.note('That needs to be at least ' + (this.state.minSecret || 4) + ' characters.', 'bad');
+        return;
+      }
+      if (wanted !== $('lock-again').value) {
+        this.note('Those two do not match.', 'bad');
+        $('lock-again').value = '';
+        $('lock-again').focus();
+        return;
+      }
+    }
+    let result;
+    try {
+      result = await api('/api/auth/change',
+                         { current: $('lock-current').value, password: wanted });
+    } catch (err) {
+      this.note('Could not reach J.A.R.V.I.S.: ' + err.message, 'bad');
+      return;
+    }
+    if (!result || !result.ok) { this.note((result && result.error) || 'that did not work', 'bad'); return; }
+
+    this.state = result.auth || this.state;
+    this.hideForm();
+    this.render();
+    // Said out loud, because the consequence is the whole point of the panel.
+    toast(removing ? 'The window is no longer locked.'
+                   : (result.auth && result.auth.required ? 'The window is locked now.'
+                                                          : 'Password saved.'));
+  },
+
+  async saveGoogle(clearing) {
+    const client = clearing ? '' : $('google-client').value.trim();
+    let result;
+    try {
+      result = await api('/api/auth/google/config', { clientId: client });
+    } catch (err) {
+      this.gnote('Could not reach J.A.R.V.I.S.: ' + err.message, 'bad');
+      return;
+    }
+    if (!result || !result.ok) { this.gnote((result && result.error) || 'that did not work', 'bad'); return; }
+    this.state = result.auth || this.state;
+    this.render();
+    this.gnote(client ? 'Saved. The lock screen will offer Google next time.'
+                      : 'Removed.', 'good');
+    if (!client) $('google-client').value = '';
+  },
+
+  gnote(text, tone) {
+    const node = $('google-note');
+    node.textContent = text;
+    node.hidden = !text;
+    node.className = 'lock-note' + (tone ? ' ' + tone : '');
+  },
+
+  async lockNow() {
+    try { await api('/api/auth/lock', {}); } catch (err) { /* going anyway */ }
+    location.replace('/');
+  },
+};
+
+/* =============================================================================
    Sessions
 
    One agent core, several surfaces: a "new session" clears the shared memory
@@ -2069,6 +2218,7 @@ function boot() {
   Tree.init();
   Sessions.init();
   Keys.init();
+  Security.init();
   setState(BOOT.state || 'idle');
 
   // Only shown when there is something to sign out of. With the lock off the

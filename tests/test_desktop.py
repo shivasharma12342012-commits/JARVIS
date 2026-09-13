@@ -974,20 +974,31 @@ def test_the_page_pulls_in_every_script_and_stylesheet(app):
 # reach this?". These answer "is this the person who started it?" — and, just as
 # importantly, that switching the lock on does not switch anything else off.
 @pytest.fixture
-def locked(app, tmp_path, monkeypatch):
-    """The same app, with a password set and the lock switched on."""
-    from config import settings
-
+def unlocked(app, tmp_path, monkeypatch):
+    """The same app with a scratch credential file and nothing set up in it."""
     from jarvis import auth
 
     monkeypatch.setattr(auth, "CREDENTIALS_PATH", tmp_path / "credentials.json")
     monkeypatch.setattr(auth, "SCRYPT_N", 2 ** 10)
     monkeypatch.setattr(auth, "SCRYPT_MAXMEM", 128 * (2 ** 10) * 8 * 2)
-    monkeypatch.setattr(settings, "DESKTOP_AUTH_MODE", "password", raising=False)
-    auth.set_password("let me in please")
     app.sessions = auth.Sessions()
     app.throttle = auth.Throttle()
     return app
+
+
+@pytest.fixture
+def locked(unlocked):
+    """...and with a password set, which is the only thing that locks it.
+
+    No mode, no environment variable, no restart. That is the point: the whole
+    model for somebody who never opens a terminal is "set a password and it
+    locks; take it off and it does not".
+    """
+    from jarvis import auth
+
+    auth.set_password("let me in please")
+    assert auth.required() is True
+    return unlocked
 
 
 def _raw(app, path, body=None, token=True, cookie=None, headers=None):
@@ -1156,3 +1167,150 @@ def test_the_boot_payload_says_who_signed_in(locked):
     assert boot["auth"]["required"] is True
     assert boot["identity"]["method"] == "password"
     assert boot["token"] == locked.token
+
+
+# ══ setting the lock up from inside the window ═══════════════════════════════════════
+def test_a_password_set_in_the_window_locks_it(unlocked):
+    """No .env, no restart. The route the Security panel calls, and its effect."""
+    from jarvis import auth
+
+    assert _raw(unlocked, "/")[0] == 200
+    assert "This window is locked" not in _raw(unlocked, "/")[1]
+
+    status, body, _ = _raw(unlocked, "/api/auth/change", {"current": "", "password": "1234"})
+    assert status == 200 and json.loads(body)["ok"] is True
+    assert auth.required() is True
+    assert "This window is locked" in _raw(unlocked, "/", token=False)[1]
+
+
+def test_removing_the_password_unlocks_it(locked):
+    from jarvis import auth
+
+    cookie = _sign_in(locked)
+    status, body, _ = _raw(locked, "/api/auth/change",
+                           {"current": "let me in please", "password": ""}, cookie=cookie)
+    assert json.loads(body)["ok"] is True
+    assert auth.has_password() is False
+    assert auth.required() is False
+    assert "This window is locked" not in _raw(locked, "/")[1]
+
+
+def test_changing_it_needs_the_current_one(locked):
+    cookie = _sign_in(locked)
+    _, body, _ = _raw(locked, "/api/auth/change",
+                      {"current": "not it", "password": "something else"}, cookie=cookie)
+    assert json.loads(body)["ok"] is False
+    from jarvis import auth
+    assert auth.verify_password("let me in please") is True
+
+
+def test_changing_it_signs_out_everywhere_else(locked):
+    """What anybody changing a password means by it."""
+    other = _sign_in(locked)
+    mine = _sign_in(locked)
+    assert _raw(locked, "/api/state", cookie=other)[0] == 200
+
+    _raw(locked, "/api/auth/change",
+         {"current": "let me in please", "password": "a new one"}, cookie=mine)
+    assert _raw(locked, "/api/state", cookie=other)[0] == 401
+
+
+def test_the_first_password_can_be_set_from_the_lock_screen(unlocked, monkeypatch):
+    """First run with a mode written into .env and nothing set up yet.
+
+    Reachable without signing in \u2014 there is nothing to sign in with \u2014 which is
+    why it refuses the moment a password exists.
+    """
+    from config import settings
+
+    from jarvis import auth
+
+    # Both: the environment is what marks the mode as somebody's decision, and
+    # the settings object is where its value is read from, the way every other
+    # setting in this project resolves.
+    monkeypatch.setenv("DESKTOP_AUTH_MODE", "password")
+    monkeypatch.setattr(settings, "DESKTOP_AUTH_MODE", "password", raising=False)
+    assert auth.required() is True
+    page = _raw(unlocked, "/", token=False)[1]
+    assert "This window is locked" in page
+    assert unlocked.token not in page
+
+    status, body, headers = _raw(unlocked, "/api/auth/setup",
+                                 {"password": "1234"}, token=False)
+    assert status == 200 and json.loads(body)["ok"] is True
+    assert "jarvis_session=" in (headers.get("Set-Cookie") or "")
+    assert auth.has_password() is True
+
+
+def test_the_first_password_route_closes_once_there_is_one(locked):
+    """Otherwise it would be a way to replace somebody else's lock."""
+    _, body, _ = _raw(locked, "/api/auth/setup", {"password": "mine now"}, token=False)
+    assert json.loads(body)["ok"] is False
+    from jarvis import auth
+    assert auth.verify_password("let me in please") is True
+
+
+def test_keep_me_signed_in_asks_for_a_longer_cookie(locked):
+    _, _, plain = _raw(locked, "/api/auth/password",
+                       {"password": "let me in please"}, token=False)
+    _, _, remembered = _raw(locked, "/api/auth/password",
+                            {"password": "let me in please", "remember": True}, token=False)
+    age = lambda headers: int((headers.get("Set-Cookie") or "Max-Age=0").split("Max-Age=")[1])
+    assert age(remembered) > age(plain)
+
+
+def test_a_google_client_can_be_pasted_into_the_window(unlocked):
+    from jarvis import auth
+
+    status, body, _ = _raw(unlocked, "/api/auth/google/config",
+                           {"clientId": "abc.apps.googleusercontent.com"})
+    assert status == 200 and json.loads(body)["ok"] is True
+    assert auth.google_client_id() == "abc.apps.googleusercontent.com"
+    assert auth.required() is True
+
+
+def test_a_mistyped_google_client_is_caught(unlocked):
+    _, body, _ = _raw(unlocked, "/api/auth/google/config", {"clientId": "my-secret-key"})
+    result = json.loads(body)
+    assert result["ok"] is False and "does not look like" in result["error"]
+
+
+def test_the_panel_cannot_overrule_a_mode_written_down(locked, monkeypatch):
+    monkeypatch.setenv("DESKTOP_AUTH_MODE", "password")
+    cookie = _sign_in(locked)
+    _, body, _ = _raw(locked, "/api/auth/mode", {"mode": "off"}, cookie=cookie)
+    result = json.loads(body)
+    assert result["ok"] is False and ".env" in result["error"]
+
+
+def test_lock_now_signs_everyone_out(locked):
+    cookie = _sign_in(locked)
+    assert _raw(locked, "/api/state", cookie=cookie)[0] == 200
+    assert _raw(locked, "/api/auth/lock", {}, cookie=cookie)[0] == 200
+    assert _raw(locked, "/api/state", cookie=cookie)[0] == 401
+
+
+def test_a_refused_post_does_not_poison_the_connection(locked):
+    """This server keeps connections alive, so a body left unread in the socket
+    arrives glued to the front of the next request. It came back as
+    `501 Unsupported method ('{}GET')` \u2014 harmless while every refusal was a
+    bug, and not harmless once a 401 became an ordinary thing to say."""
+    import http.client
+
+    base = locked.url.split("?")[0].rstrip("/")
+    host, _, port = base.split("//", 1)[1].partition(":")
+    connection = http.client.HTTPConnection(host, int(port), timeout=5)
+    try:
+        connection.request("POST", "/api/chat", body=json.dumps({"text": "refused"}),
+                           headers={"Content-Type": "application/json",
+                                    "X-Jarvis-Token": locked.token})
+        first = connection.getresponse()
+        first.read()
+        assert first.status == 401
+
+        connection.request("GET", "/api/auth/state")
+        second = connection.getresponse()
+        second.read()
+        assert second.status == 200
+    finally:
+        connection.close()

@@ -615,6 +615,10 @@ PUBLIC_ROUTES = frozenset({
     "/", "/index.html", "/signin",
     "/api/auth/state", "/api/auth/password", "/api/auth/google/start",
     "/api/auth/google/callback",
+    # First run: there is no password yet, so there is nothing to sign in with.
+    # The handler refuses the moment one exists, which is what keeps this from
+    # being a way to overwrite somebody else's lock.
+    "/api/auth/setup",
 })
 
 #: How many paths the fuzzy opener is given. A ceiling, not a target.
@@ -1269,17 +1273,18 @@ class _Handler(BaseHTTPRequestHandler):
             return auth.OPEN
         return self.app.sessions.resolve(self._cookie(SESSION_COOKIE))
 
-    def _grant(self, identity: Any) -> None:
+    def _grant(self, identity: Any, remember: bool = False) -> None:
         """Hand the browser a session cookie for a successful sign-in.
 
         ``HttpOnly`` so no script on the page can read it, ``SameSite=Strict``
         so no other site can cause the browser to send it. Not ``Secure``: this
         is plain http on 127.0.0.1 and a Secure cookie would simply be dropped.
         """
-        token = self.app.sessions.mint(identity)
+        token = self.app.sessions.mint(identity, remember=remember)
+        lifetime = self.app.sessions.remembered_ttl if remember else self.app.sessions.ttl
         self._cookie_header = (
             f"{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict; "
-            f"Max-Age={int(self.app.sessions.ttl)}"
+            f"Max-Age={int(lifetime)}"
         )
 
     def _clear_cookie(self) -> None:
@@ -1364,13 +1369,31 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802 - base class name
         route = urlparse(self.path).path
+        # Read *before* deciding whether to answer. A refused POST whose body is
+        # left sitting in the socket poisons the connection: this server keeps
+        # it alive, so the next request arrives with the unread bytes glued to
+        # the front of it and comes back as `501 Unsupported method ('{}GET')`.
+        # Harmless while every refusal was a bug anyway; not harmless now that a
+        # 401 is an ordinary thing to say to a window that has just been locked.
+        body = self._body()
         if not self._gate(route):
             return
         self.app.touch()
-        body = self._body()
 
         if route == "/api/auth/password":
             self._json(self._password_signin(body))
+        elif route == "/api/auth/setup":
+            self._json(self._first_password(body))
+        elif route == "/api/auth/change":
+            self._json(self._change_password(body))
+        elif route == "/api/auth/google/config":
+            self._json(self._google_config(body))
+        elif route == "/api/auth/mode":
+            self._json(self._set_mode(body))
+        elif route == "/api/auth/lock":
+            self.app.sessions.revoke_all()
+            self._clear_cookie()
+            self._json({"ok": True})
         elif route == "/api/auth/logout":
             self.app.sessions.revoke(self._cookie(SESSION_COOKIE))
             self._clear_cookie()
@@ -1466,8 +1489,96 @@ class _Handler(BaseHTTPRequestHandler):
         self.app.throttle.succeed()
         identity = auth.Identity(method="password", subject="operator",
                                  name=str(settings.USER_NAME or "") or "Operator")
-        self._grant(identity)
+        self._grant(identity, remember=bool(body.get("remember")))
         return {"ok": True, "identity": identity.to_dict()}
+
+    # -- managing the lock from inside the window ---------------------------------------
+    def _first_password(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Set the very first password, from the lock screen, on first run.
+
+        Reachable without signing in, which is the point: there is nothing to
+        sign in with yet. It stops working the instant a password exists, so it
+        can never be used to replace one — that path needs the current password
+        and goes through :meth:`_change_password`.
+        """
+        if auth.has_password():
+            return {"ok": False, "error": "a password is already set"}
+        secret = str(body.get("password") or "")
+        try:
+            auth.set_password(secret)
+        except ValueError as error:
+            return {"ok": False, "error": str(error)}
+
+        identity = auth.Identity(method="password", subject="operator",
+                                 name=str(settings.USER_NAME or "") or "Operator")
+        self._grant(identity, remember=bool(body.get("remember")))
+        LOG.info("a password was set from the lock screen")
+        return {"ok": True, "identity": identity.to_dict()}
+
+    def _change_password(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Change or remove the password. Always needs the current one first."""
+        if self._identity() is None and auth.required():
+            return {"ok": False, "error": "not signed in"}
+        if auth.has_password() and not auth.verify_password(str(body.get("current") or "")):
+            self.app.throttle.fail()
+            return {"ok": False, "error": "that is not the current password"}
+
+        wanted = str(body.get("password") or "")
+        if not wanted:
+            auth.clear_password()
+            LOG.info("the password was removed from the Security panel")
+            return {"ok": True, "removed": True, "auth": auth.describe()}
+        try:
+            auth.set_password(wanted)
+        except ValueError as error:
+            return {"ok": False, "error": str(error)}
+
+        # Changing the password signs out everywhere else, which is what anybody
+        # changing a password means by it. This browser is signed back in on the
+        # way out, so the person doing it is not the one who gets locked out.
+        self.app.sessions.revoke_all()
+        identity = auth.Identity(method="password", subject="operator",
+                                 name=str(settings.USER_NAME or "") or "Operator")
+        self._grant(identity, remember=True)
+        LOG.info("the password was changed from the Security panel")
+        return {"ok": True, "auth": auth.describe()}
+
+    def _google_config(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Store the Google client pasted into the Security panel."""
+        if self._identity() is None and auth.required():
+            return {"ok": False, "error": "not signed in"}
+        if auth.describe()["googleManaged"]:
+            return {"ok": False, "error": "GOOGLE_CLIENT_ID is set in your .env; change it there"}
+
+        client = str(body.get("clientId") or "").strip()
+        if not client:
+            auth.clear_google_client()
+            return {"ok": True, "auth": auth.describe()}
+        # Not validation so much as a typo check: every Google client id ends
+        # this way, and pasting the wrong field is the commonest mistake here.
+        if not client.endswith(".apps.googleusercontent.com"):
+            return {"ok": False,
+                    "error": "that does not look like a client ID — it should end in "
+                             ".apps.googleusercontent.com"}
+        auth.set_google_client(client, str(body.get("clientSecret") or ""))
+        return {"ok": True, "auth": auth.describe()}
+
+    def _set_mode(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Turn the lock on or off from the Security panel."""
+        if self._identity() is None and auth.required():
+            return {"ok": False, "error": "not signed in"}
+        if auth.describe()["managed"]:
+            return {"ok": False, "error": "DESKTOP_AUTH_MODE is set in your .env; change it there"}
+
+        wanted = str(body.get("mode") or "").strip().lower()
+        if wanted not in auth.MODES:
+            return {"ok": False, "error": "no such mode"}
+        if wanted in ("password", "any") and not auth.has_password():
+            return {"ok": False, "error": "set a password first"}
+        if wanted in ("google", "any") and not auth.google_client_id():
+            return {"ok": False, "error": "add a Google client ID first"}
+        auth.set_mode(wanted)
+        return {"ok": True, "auth": auth.describe()}
 
     def _redirect_uri(self) -> str:
         """Where Google sends the browser back to. Loopback, on this very port."""
@@ -1497,7 +1608,9 @@ class _Handler(BaseHTTPRequestHandler):
         if identity is None:
             self._signin_page(error=why or "that sign-in did not complete")
             return
-        self._grant(identity)
+        # Remembered by default. The round trip through Google left no checkbox
+        # to carry back, and anyone who just chose an account meant to stay.
+        self._grant(identity, remember=True)
         # Straight to the application, rather than back to a page that would
         # only tell them to click through to it.
         self._page()

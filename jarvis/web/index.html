@@ -661,6 +661,75 @@
     </section>
 
     <p class="studio-note" id="persist-note">Saved to <code>.jarvis_theme.json</code> — these come back next time, in the terminal too.</p>
+
+    <!-- ── Security ─────────────────────────────────────────────────
+         Everything about the lock lives here, so nobody has to open a terminal
+         or edit a dotfile to switch it on. Setting a password locks the window;
+         removing it unlocks it. That is the whole model. -->
+    <section class="studio-section" id="security">
+      <h3>Security</h3>
+
+      <div class="lock-state" id="lock-state">
+        <span class="lock-dot" id="lock-dot"></span>
+        <span id="lock-say">This window is not locked.</span>
+      </div>
+
+      <p class="studio-note" id="lock-managed" hidden>
+        <code>DESKTOP_AUTH_MODE</code> is set in your <code>.env</code>, so it is in
+        charge of this, not the buttons below.
+      </p>
+
+      <div class="lock-row">
+        <button class="mini-btn wide" id="btn-set-password">Set a password</button>
+        <button class="mini-btn wide" id="btn-remove-password" hidden>Remove it</button>
+        <button class="mini-btn wide" id="btn-lock-now" hidden>Lock now</button>
+      </div>
+
+      <!-- Set, change or remove. Which fields show depends on which of those
+           three this is, so there is only ever one form to understand. -->
+      <form class="lock-form" id="lock-form" hidden>
+        <label class="lock-field" id="current-wrap" hidden>
+          <span>Current password</span>
+          <input type="password" id="lock-current" autocomplete="current-password" spellcheck="false">
+        </label>
+        <label class="lock-field" id="new-wrap">
+          <span id="new-label">New password or PIN</span>
+          <input type="password" id="lock-new" autocomplete="new-password" spellcheck="false">
+        </label>
+        <label class="lock-field" id="again-wrap">
+          <span>Type it again</span>
+          <input type="password" id="lock-again" autocomplete="new-password" spellcheck="false">
+        </label>
+        <p class="lock-note" id="lock-note" hidden></p>
+        <div class="lock-row">
+          <button type="submit" class="mini-btn wide primary" id="btn-lock-save">Save</button>
+          <button type="button" class="mini-btn wide" id="btn-lock-cancel">Cancel</button>
+        </div>
+      </form>
+
+      <details class="lock-more" id="google-more">
+        <summary>Sign in with Google instead</summary>
+        <p class="studio-note">
+          Google needs a client ID of your own — there is no way around that, every
+          copy of an app has its own. It takes about a minute:
+        </p>
+        <ol class="studio-steps">
+          <li>Open <a href="https://console.cloud.google.com/apis/credentials" target="_blank"
+                      rel="noreferrer noopener">Google Cloud › Credentials</a></li>
+          <li>Create credentials › OAuth client ID › <b>Desktop app</b></li>
+          <li>Copy the client ID and paste it here</li>
+        </ol>
+        <label class="hex-field wide">
+          <input type="text" id="google-client" spellcheck="false" autocomplete="off"
+                 placeholder="….apps.googleusercontent.com" aria-label="Google client ID">
+        </label>
+        <p class="lock-note" id="google-note" hidden></p>
+        <div class="lock-row">
+          <button class="mini-btn wide" id="btn-google-save">Save</button>
+          <button class="mini-btn wide" id="btn-google-clear" hidden>Remove</button>
+        </div>
+      </details>
+    </section>
   </div>
 </aside>
 
