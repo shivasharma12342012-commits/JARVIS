@@ -1314,3 +1314,99 @@ def test_a_refused_post_does_not_poison_the_connection(locked):
         assert second.status == 200
     finally:
         connection.close()
+
+
+# ══ hearing and speaking ═════════════════════════════════════════════════════════════
+def test_the_wake_word_reaches_the_window(app):
+    """A window has to be told it was woken; a terminal HUD has no use for it."""
+    # Waiting on the phrase, not on "wake": the event name arrives a line before
+    # its data does, and stopping at the name reads only half the frame.
+    frames, worker = read_events(app, seconds=1.5, until="namaste")
+    app.hud.wake("namaste jarvis")
+    worker.join(timeout=3.0)
+    joined = "".join(frames)
+    assert "wake" in joined, joined
+    assert "namaste jarvis" in joined, joined
+
+
+def test_a_wake_is_not_replayed_into_a_window_opened_later(app):
+    """It is a moment, not a state. Replaying it would light the room for
+    something that happened an hour ago."""
+    assert "wake" in desktop_mod._EPHEMERAL_EVENTS
+
+
+def test_the_terminal_hud_does_not_have_to_understand_being_woken(app):
+    """The mirror forwards what the other front end has and passes over the rest."""
+    class OldHud:
+        def __init__(self):
+            self.seen = []
+
+        def log_system(self, text, level="info"):
+            self.seen.append(text)
+
+    old = OldHud()
+    hud = desktop_mod.DesktopHUD(app.hub, mirror=old)
+    hud.wake("hello jarvis")          # must not raise
+    hud.log_system("and this still gets through")
+    assert old.seen == ["and this still gets through"]
+
+
+def test_an_attached_window_does_not_own_the_microphone(app):
+    """The terminal session's voice is not the window's to switch on and off."""
+    snapshot = app.voice_snapshot()
+    assert snapshot["owned"] is False
+    assert app.voice_action({"listen": True})["ok"] is False
+
+
+def test_the_voice_route_says_no_rather_than_failing(app):
+    status, body, _ = _raw(app, "/api/voice", {"listen": True})
+    assert status == 200
+    assert json.loads(body)["ok"] is False
+
+
+def test_the_boot_payload_describes_the_voice(app):
+    voice = get_json(app, "/api/state")["voice"]
+    assert set(voice) >= {"available", "listening", "muted", "status"}
+
+
+def test_a_window_of_its_own_builds_a_voice_or_says_why_not():
+    """Standalone, `jarvis-desktop` used to have no ears at all — the voice lived
+    in the terminal front end and nowhere else. Building one must never be the
+    reason a window refuses to open, so every failure here is survivable."""
+    backend = desktop_mod.StandaloneBackend(turbo=False, monitor=False)
+    backend.hud = None
+    backend._build_voice()
+    snapshot = backend.voice_snapshot()
+    assert isinstance(snapshot, dict)
+    assert snapshot["available"] in (True, False)
+    # No microphone in a test container, so this is the branch that runs here.
+    if backend.voice is None:
+        assert snapshot["available"] is False
+        assert backend.voice_action({"listen": True})["ok"] is False
+
+
+def test_the_voice_is_switched_off_by_configuration(monkeypatch):
+    from config import settings
+
+    monkeypatch.setattr(settings, "VOICE_ENABLED", False)
+    backend = desktop_mod.StandaloneBackend(turbo=False, monitor=False)
+    backend.hud = None
+    backend._build_voice()
+    assert backend.voice is None
+
+
+def test_every_call_phrase_survives_the_wake_normaliser():
+    """A greeting the recogniser spells its own way is not a greeting. Several
+    spellings of each are configured, and every one has to normalise to itself."""
+    from config import settings
+
+    from jarvis.voice import normalise_wake
+
+    assert len(settings.WAKE_WORDS) >= 6
+    for phrase in settings.WAKE_WORDS:
+        normalised = normalise_wake(phrase)
+        assert normalised, phrase
+        assert normalise_wake(normalised) == normalised, phrase
+    spellings = " ".join(settings.WAKE_WORDS).lower()
+    for expected in ("hello jarvis", "namaste jarvis", "lagu jarvis"):
+        assert expected in spellings, expected

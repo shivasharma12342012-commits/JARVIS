@@ -735,10 +735,14 @@ const HANDLERS = {
     ]);
     Logs.add(ready ? 'info' : 'warn', d.text);
   },
-  voice_status: (d) => Logs.add('info', d.text),
+  voice_status: (d) => { Logs.add('info', d.text); Voice.status(d.text); },
   protocol: (d) => { if (d.name) { toast('Protocol: ' + d.name); Logs.add('info', 'protocol: ' + d.name); } },
   warm: () => {},
-  amplitude: () => {},
+  wake: (d) => {
+    Voice.woke();
+    Logs.add('info', 'woken' + (d && d.phrase ? ': ' + d.phrase : ''));
+  },
+  amplitude: (d) => Voice.hear(d.value),
   theme: (d) => { applyVariables(d.variables); Studio.sync(d.theme); },
   ask: (d) => Ask.card(d),
   ask_done: (d) => Ask.close(d.token),
@@ -1820,6 +1824,106 @@ function toast(text) {
 }
 
 /* =============================================================================
+   Voice
+
+   "Hello J.A.R.V.I.S.", "Namaste J.A.R.V.I.S.", "Pi lagu J.A.R.V.I.S." — and the
+   whole window turns blue. The field itself is CSS; this decides when it is up,
+   and feeds it the level of your voice so the edge breathes rather than glows
+   flatly.
+   ============================================================================= */
+const Voice = {
+  info: {},
+  level: 0,
+
+  init() {
+    this.info = BOOT.voice || {};
+    this.mic = $('btn-mic');
+    this.mic.onclick = () => this.toggle();
+    $('btn-mute').onclick = () => this.mute(!this.info.muted);
+    this.render();
+  },
+
+  render() {
+    const info = this.info || {};
+    const listening = !!info.listening;
+    this.mic.classList.toggle('listening', listening);
+    this.mic.setAttribute('aria-pressed', listening ? 'true' : 'false');
+
+    if (!info.owned) {
+      this.mic.title = 'The terminal session owns the microphone';
+    } else if (!info.available) {
+      this.mic.title = 'No microphone — ' + (info.status || 'voice is unavailable');
+    } else if (listening) {
+      const phrases = (info.phrases || []).slice(0, 3)
+        .map((phrase) => '\u201c' + phrase + '\u201d').join(', ');
+      this.mic.title = 'Listening' + (phrases ? ' for ' + phrases : '') + ' — click to stop';
+    } else {
+      this.mic.title = 'Listen for the call word';
+    }
+    $('btn-mute').classList.toggle('on', !!info.muted);
+    $('btn-mute').title = info.muted ? 'Speech is muted' : 'Mute what he says';
+  },
+
+  async toggle() {
+    if (!this.info.owned) {
+      toast('The terminal session owns the microphone.');
+      return;
+    }
+    const wanted = !this.info.listening;
+    let result;
+    try { result = await api('/api/voice', { listen: wanted }); }
+    catch (err) { toast('Could not reach the voice subsystem.'); return; }
+    if (!result || result.ok === false) {
+      toast((result && result.error) || 'The microphone would not open.');
+    }
+    if (result) { this.info = Object.assign({}, this.info, result); this.render(); }
+    if (this.info.listening) toast('Listening. Say "' + ((this.info.phrases || [])[0] || 'hello jarvis') + '".');
+  },
+
+  async mute(wanted) {
+    let result;
+    try { result = await api('/api/voice', { muted: !!wanted }); }
+    catch (err) { toast('Could not reach the voice subsystem.'); return; }
+    if (result && result.ok === false) {
+      // No voice of its own: fall back to the live keyword, which the terminal
+      // session behind this window does understand.
+      Composer.send(wanted ? 'quiet' : 'talk');
+      return;
+    }
+    if (result) { this.info = Object.assign({}, this.info, result); this.render(); }
+  },
+
+  /* The moment of waking. One beat of a brighter field, then back to the steady
+     listening glow underneath it. */
+  woke() {
+    document.body.classList.remove('woken');
+    void document.body.offsetWidth;          // restart the animation
+    document.body.classList.add('woken');
+    clearTimeout(this._settle);
+    this._settle = setTimeout(() => document.body.classList.remove('woken'), 1100);
+  },
+
+  /* Amplitude arrives many times a second. Writing a custom property is cheap;
+     doing anything that touches layout at that rate is not. */
+  hear(value) {
+    const level = clamp(Number(value) || 0, 0, 1);
+    // Eased towards the new reading rather than snapped to it, so a consonant
+    // does not strobe the whole window.
+    this.level = this.level + (level - this.level) * 0.35;
+    if (this._frame) return;
+    this._frame = requestAnimationFrame(() => {
+      this._frame = 0;
+      document.documentElement.style.setProperty('--voice-level', this.level.toFixed(3));
+    });
+  },
+
+  status(text) {
+    this.info = Object.assign({}, this.info, { status: text });
+    this.render();
+  },
+};
+
+/* =============================================================================
    Security
 
    The whole lock, in one panel. Setting a password locks the window; removing
@@ -2219,6 +2323,7 @@ function boot() {
   Sessions.init();
   Keys.init();
   Security.init();
+  Voice.init();
   setState(BOOT.state || 'idle');
 
   // Only shown when there is something to sign out of. With the lock off the
@@ -2246,8 +2351,6 @@ function boot() {
   // anybody pressed it hoping for.
   $('btn-attach').onclick = () => { Ide.surface('code'); setTimeout(() => Ide.quick.show(), 60); };
   $('model-chip').onclick = () => { Rail.show('system'); };
-  $('btn-mic').onclick = () => Composer.send('talk');
-  $('btn-mute').onclick = () => Composer.send('quiet');
   document.querySelectorAll('.nav-item[data-rail]').forEach((item) => {
     item.onclick = () => Rail.show(item.dataset.rail);
   });

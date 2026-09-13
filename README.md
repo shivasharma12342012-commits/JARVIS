@@ -34,7 +34,7 @@ languages including Hindi, Bengali, Telugu, Marathi and Tamil.
 | **Full-screen HUD** | The whole terminal, in Claude Code's grammar: a scrollable transcript, replies that arrive word by word, instrument cards that spin while they run and resolve in place, and a working line that says what it is doing and how to stop it. It opens on a greeting that has read the machine first. `--classic` restores the old pinned strip. |
 | **Live keywords** | `talk` and `quiet` act the moment you send them, and are coloured as you type them so you can see it before you press enter. |
 | **Built to answer fast** | The model is loaded before you ask; the reply streams to the screen as it is generated; independent instruments run side by side; Ctrl-C tears the request down rather than asking it to stop when convenient. |
-| **Wake-word voice** | Say **"Hello J.A.R.V.I.S."** or **"Namaste, J.A.R.V.I.S."** Background listening, a rising chime, and he never answers his own echo. |
+| **Wake-word voice** | Say **"Hello J.A.R.V.I.S."**, **"Namaste, J.A.R.V.I.S."** or **"Pi lagu, J.A.R.V.I.S."** Background listening, a rising chime, and he never answers his own echo — and in the window, the whole room turns blue while he listens. |
 | **Knows your voice** | Enrol once and the call word is checked against your voiceprint. |
 | **Background listener** | `--daemon` waits for the call word with no window open, greets you, and opens a terminal. |
 | **Speaks as it thinks** | Sentences go to the speaker as they stream, so he starts answering in about a second instead of eight. |
@@ -130,16 +130,45 @@ prompt — follows this setting, and it is translated per language (`सर`, `�
 
 ## Waking him
 
-The call words are exactly two:
+The call words are three:
 
 | Say | |
 |---|---|
 | **"Hello J.A.R.V.I.S."** | English |
-| **"Namaste, J.A.R.V.I.S."** | and its native forms — नमस्ते जार्विस, নমস্তে জার্ভিস, வணக்கம் ஜார்விஸ் |
+| **"Namaste, J.A.R.V.I.S."** | English |
+| **"Pi lagu, J.A.R.V.I.S."** | पाय लागू जार्विस — also heard as *pay lagu*, *paay laagu*, *pai lagu* |
 
 Speech recognition never returns the dots, so `Hello J.A.R.V.I.S.`, `hello jarvis` and
 even `hello j a r v i s` all normalise to the same phrase. Common mishearings of the name
-(`jervis`, `javis`, `jarwis`) are accepted too.
+(`jervis`, `javis`, `jarwis`) are accepted too, and each greeting is configured under
+several spellings — a recogniser hands back what it heard rather than what was meant, and
+a greeting that only works when the microphone spells it your way is not a greeting.
+
+### The window turns blue
+
+Say it with the desktop window open and the whole thing lights up:
+
+| | |
+|---|---|
+| **The moment it hears you** | One brighter beat, and a ring out from the middle. |
+| **While it is listening** | A blue wash over the window and a lit border that breathes with the level of your voice. |
+| **While it answers** | The same field, calmer and green, so the two halves of a conversation do not look identical. |
+
+Blue whatever accent you chose — the one deliberate exception to deriving every
+colour in the interface from your seed. A signal that means *he is listening to the
+room* has to read the same way every time, at a glance, from across a room, and it
+cannot if it is whatever colour somebody picked last week. Your accent is mixed in
+at a fifth so it still belongs to the theme.
+
+The microphone button in the composer starts and stops listening, and says what it
+is doing. It used to send the word "talk" as a chat message, which is not what a
+microphone button is. Under `prefers-reduced-motion` nothing moves; the colour still
+says it.
+
+A window opened on its own — `jarvis-desktop`, with no terminal behind it — now
+builds its own voice, so it can be spoken to. A window opened onto a running
+terminal session is looking at *that* session's microphone, does not own it, and
+says so rather than pretending to switch it on and off underneath it.
 
 A bare **"Jarvis"** deliberately does **not** wake him — the call word is the whole
 greeting, so mentioning him in conversation is safe. Set `WAKE_ALLOW_BARE_NAME=true` if
@@ -1141,7 +1170,7 @@ pip install pytest pytest-asyncio
 pytest -q
 ```
 
-Three hundred and ninety-eight tests, no Ollama daemon and no microphone, well
+Four hundred and nine tests, no Ollama daemon and no microphone, well
 under two minutes. Most need no browser either; the handful in
 `tests/test_ui.py` drive the real front end through Playwright and skip
 themselves cleanly when it is not installed. The model is a scripted fake and the HUD is driven

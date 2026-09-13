@@ -41,6 +41,18 @@
   <span class="bloom bloom-b"></span>
 </div>
 
+<!-- ══ the wake field ════════════════════════════════════════
+     The whole window lights up when the call word is heard. Blue on purpose and
+     blue regardless of the operator's accent: this is the one thing in the
+     application that has to mean the same thing every time, at a glance, from
+     across a room, and a colour that changes with a setting cannot do that.
+     Above everything, and touching nothing — it never takes a pointer event. -->
+<div class="wake-field" id="wake-field" aria-hidden="true">
+  <span class="wake-wash"></span>
+  <span class="wake-ring"></span>
+  <span class="wake-edge"></span>
+</div>
+
 <!-- ══ title bar ══════════════════════════════════════════════════════════ -->
 <header class="titlebar">
   <button class="icon-btn sm" id="btn-sidebar" title="Sidebar  ·  Ctrl+\" aria-label="Toggle the sidebar">

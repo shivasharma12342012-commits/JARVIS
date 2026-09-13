@@ -50,6 +50,7 @@ import logging
 import mimetypes
 import os
 import queue
+import random
 import secrets
 import shutil
 import socket
@@ -204,7 +205,9 @@ class EventHub:
 #: Events not worth replaying to a window that opens later: they describe an
 #: instant, not a fact, and a stale one would be actively misleading.
 _EPHEMERAL_EVENTS = {
-    "telemetry", "amplitude", "token", "heartbeat", "state",
+    # "wake" is a moment, not a state: replaying it into a window opened later
+    # would light the room for something that happened an hour ago.
+    "telemetry", "amplitude", "token", "heartbeat", "state", "wake",
     # The shell keeps its own scrollback in the pane; replaying a thousand
     # lines of it into a reloaded tab would be neither useful nor cheap.
     "shell_out", "shell_done", "shell_exit",
@@ -346,6 +349,16 @@ class DesktopHUD:
     def set_protocol(self, name: str | None) -> None:
         self.hub.publish("protocol", name=str(name or ""))
         self._mirrored("set_protocol", name)
+
+    def wake(self, phrase: str = "") -> None:
+        """The call word was heard. The window lights up; the terminal does not.
+
+        Mirrored like everything else, and the terminal HUD simply has no such
+        method \u2014 which :meth:`_mirrored` handles by doing nothing. A front end
+        that wants to react to being woken can; one that does not, need not know.
+        """
+        self.hub.publish("wake", phrase=str(phrase or ""))
+        self._mirrored("wake", phrase)
 
     def set_voice_status(self, text: str) -> None:
         self.hub.publish("voice_status", text=str(text))
@@ -1012,6 +1025,10 @@ class StandaloneBackend(Backend):
         self.engine: Any = None
         self.monitor: Any = None
         self.broker: Any = None
+        #: Ears and a mouth. A window opened on its own used to have neither —
+        #: the voice lived in the terminal front end and nowhere else — so
+        #: `jarvis-desktop` could not be spoken to at all.
+        self.voice: Any = None
         self._queue: queue.Queue[str | None] = queue.Queue()
         self._worker: threading.Thread | None = None
         self._stopping = threading.Event()
@@ -1031,23 +1048,24 @@ class StandaloneBackend(Backend):
             settings.MODEL_NAME = self.model
 
         hud = self.hud
+        self._build_voice()
         self.monitor = AmbientMonitor(
             on_alert=self._on_alert,
             on_telemetry=lambda t: hud and hud.set_telemetry(t),
         )
-        self.engine = ProtocolEngine(hud=hud, voice=None, monitor=self.monitor)
-        self.broker = PermissionBroker(hud=hud, voice=None, protocol_engine=self.engine)
+        self.engine = ProtocolEngine(hud=hud, voice=self.voice, monitor=self.monitor)
+        self.broker = PermissionBroker(hud=hud, voice=self.voice, protocol_engine=self.engine)
         self.registry = build_registry(self.engine, hud, self.monitor, self.broker)
         self.agent = build_agent(
             self.registry,
             turbo=self.turbo,
             hud=hud,
-            voice=None,
+            voice=self.voice,
             protocol_engine=self.engine,
             monitor=self.monitor,
         )
         self.engine.bind(agent=self.agent)
-        self.broker.bind(hud=hud, voice=None, protocol_engine=self.engine)
+        self.broker.bind(hud=hud, voice=self.voice, protocol_engine=self.engine)
 
         if self.want_monitor:
             try:
@@ -1061,6 +1079,107 @@ class StandaloneBackend(Backend):
         # The model check runs off the hot path: the window is already usable,
         # and a missing Ollama should be a line in the transcript, not a stall.
         threading.Thread(target=self._preflight, name="desktop-preflight", daemon=True).start()
+
+    def _build_voice(self) -> None:
+        """Bring up wake-word listening, if this machine and this config allow it.
+
+        Every failure here is survivable and none of them is worth refusing to
+        open the window over: no microphone, no speech library, no audio device.
+        The window says what it has and carries on without the rest.
+        """
+        if not bool(getattr(settings, "VOICE_ENABLED", True)):
+            LOG.info("voice subsystem disabled by configuration")
+            return
+        try:
+            from jarvis.voice import VoiceSystem
+        except Exception:
+            LOG.info("voice subsystem unavailable (its dependencies are not installed)")
+            return
+
+        hud = self.hud
+        try:
+            self.voice = VoiceSystem(
+                on_wake=self._on_wake,
+                on_utterance=self.submit,
+                on_state=lambda state: hud and hud.set_state(state),
+                on_amplitude=lambda level: hud and hud.set_amplitude(level),
+                on_log=lambda text, level="info": hud and hud.log_system(text, level),
+            )
+        except Exception:
+            LOG.warning("The voice subsystem would not start", exc_info=True)
+            self.voice = None
+            return
+
+        # Silent until invited, exactly as the terminal starts.
+        if bool(getattr(settings, "START_MUTED", True)):
+            try:
+                self.voice.set_muted(True)
+            except Exception:
+                LOG.debug("Could not start muted", exc_info=True)
+        if hud is not None:
+            try:
+                hud.set_voice_status(self.voice.status.describe())
+            except Exception:
+                LOG.debug("Could not report the voice status", exc_info=True)
+
+    def _on_wake(self) -> None:
+        """The call word was heard. Light the window, then say something back."""
+        hud = self.hud
+        if hud is not None:
+            try:
+                hud.wake()
+            except Exception:
+                LOG.debug("Could not announce the wake", exc_info=True)
+        try:
+            from jarvis import prompts
+
+            line = prompts.personalise(random.choice(prompts.WAKE_ACKNOWLEDGEMENTS))
+        except Exception:
+            line = "Yes?"
+        if hud is not None:
+            hud.log_system(line, "info")
+        if self.voice is not None:
+            try:
+                # Blocking, so the acknowledgement finishes before the microphone
+                # reopens and hears J.A.R.V.I.S. instead of the operator.
+                self.voice.speak(line, blocking=True)
+            except Exception:
+                LOG.debug("Could not speak the acknowledgement", exc_info=True)
+
+    # -- what the window asks of the voice ----------------------------------------------
+    def voice_snapshot(self) -> dict[str, Any]:
+        """What the microphone control in the window needs to draw itself."""
+        if self.voice is None:
+            return {"available": False, "listening": False, "muted": True,
+                    "status": "no voice on this install", "phrases": []}
+        status = self.voice.status
+        return {
+            "available": bool(getattr(status, "stt_available", False)),
+            "speaks": bool(getattr(status, "tts_available", False)),
+            "listening": bool(getattr(self.voice, "listening", False)),
+            "muted": bool(self.voice.is_muted()) if hasattr(self.voice, "is_muted") else False,
+            "status": status.describe(),
+            "phrases": list(getattr(settings, "WAKE_WORDS", []))[:6],
+        }
+
+    def voice_action(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Start or stop listening, or mute the speech, from the window."""
+        if self.voice is None:
+            return {"ok": False, "error": "this install has no voice subsystem"}
+        try:
+            if "listen" in body:
+                if body.get("listen"):
+                    if not self.voice.start_listening():
+                        return dict({"ok": False, "error": "no microphone was available"},
+                                    **self.voice_snapshot())
+                else:
+                    self.voice.stop_listening()
+            if "muted" in body:
+                self.voice.set_muted(bool(body.get("muted")))
+        except Exception as error:
+            LOG.warning("The voice subsystem refused that", exc_info=True)
+            return {"ok": False, "error": str(error)}
+        return dict({"ok": True}, **self.voice_snapshot())
 
     def _preflight(self) -> None:
         """Report the model's availability into the window, once, at startup."""
@@ -1085,6 +1204,16 @@ class StandaloneBackend(Backend):
     def shutdown(self) -> None:
         self._stopping.set()
         self._queue.put(None)
+        # The microphone first: a background listener left running holds the
+        # audio device open, and the next thing to want it will not get it.
+        if self.voice is not None:
+            for method in ("stop_listening", "shutdown", "stop"):
+                closer = getattr(self.voice, method, None)
+                if callable(closer):
+                    try:
+                        closer()
+                    except Exception:
+                        LOG.debug("voice.%s complained", method, exc_info=True)
         for closer, label in ((self.monitor, "monitor"), (self.agent, "agent")):
             close = getattr(closer, "stop", None) or getattr(closer, "close", None)
             if callable(close):
@@ -1417,6 +1546,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._json({"ok": resolved})
         elif route == "/api/shell":
             self._json(self._shell_action(body))
+        elif route == "/api/voice":
+            self._json(self.app.voice_action(body))
         elif route == "/api/save":
             self._json(self.app.workspace.write(
                 str(body.get("path") or ""),
@@ -2079,12 +2210,36 @@ class DesktopApp:
             # server would only refuse.
             "canEdit": bool(getattr(settings, "DESKTOP_EDIT_ENABLED", True)),
             "auth": auth.describe(),
+            "voice": self.voice_snapshot(),
         }
         try:
             payload.update(self.backend.snapshot())
         except Exception:
             LOG.debug("Backend would not describe itself", exc_info=True)
         return payload
+
+    # -- the voice, wherever it happens to live -----------------------------------------
+    def voice_snapshot(self) -> dict[str, Any]:
+        """What the window's microphone control needs.
+
+        The voice belongs to the backend, and only one backend has one: a window
+        attached to a running terminal is looking at that terminal's voice, which
+        it does not own and must not switch on and off underneath it.
+        """
+        describe = getattr(self.backend, "voice_snapshot", None)
+        if callable(describe):
+            try:
+                return dict(describe(), owned=True)
+            except Exception:
+                LOG.debug("The backend would not describe its voice", exc_info=True)
+        return {"available": False, "owned": False, "listening": False, "muted": True,
+                "status": "the voice belongs to the terminal session", "phrases": []}
+
+    def voice_action(self, body: dict[str, Any]) -> dict[str, Any]:
+        act = getattr(self.backend, "voice_action", None)
+        if not callable(act):
+            return {"ok": False, "error": "this window does not own the voice"}
+        return act(body)
 
     def apply_theme(self, body: dict[str, Any]) -> dict[str, Any]:
         """Adopt the colours the operator just chose, and tell every window.
