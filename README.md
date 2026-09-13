@@ -25,6 +25,7 @@ languages including Hindi, Bengali, Telugu, Marathi and Tamil.
 | **An editor that edits** | Open, change and save, sandboxed to the workspace. Auto-indent, bracket pairs, comment toggling, move and duplicate lines, find and replace, go to line, fuzzy open, a minimap, change bars in the gutter, and native undo because it is built on a real text area. |
 | **54 languages** | One tokeniser, fifty-four grammars, and your colours rather than a palette of its own. The round trip is checked against every file in this repository: strip the spans, unescape, get the source back character for character. |
 | **Glass** | Translucent panels with lit edges and a specular highlight that follows the pointer, over three washes of your accent drifting on mutually prime periods. Every bit of it stops under `prefers-reduced-motion`. |
+| **A lock on the window** | Optional sign-in, by password or by Google. The password is a salted scrypt hash in a file this machine keeps, never a literal in a source file. Off by default; one setting turns it on. |
 | **Logs** | The session as it happens — timestamp, level, message — filterable by level, fed by the same event stream as everything else. |
 | **A real terminal** | PowerShell on Windows, your login shell elsewhere, running as one long-lived process beside the conversation. `cd` sticks, variables persist, history on the arrow keys, exit codes in red. |
 | **The agentic HUD, in the app** | Its own grammar — `⏺` for what J.A.R.V.I.S. did, `⎿` for what came back — streaming live in its own tab. The terminal front end is not replaced by the window; it is reproduced in it, and still runs on its own. |
@@ -673,7 +674,7 @@ layout, its own keyboard map and its own visual register.
 | **Agent** | Six things worth asking about a file — Explain, Review, Simplify, Tests, Document, Fix — and the files touched this session. |
 | **Editor** | Tabs, breadcrumbs, line numbers, active-line band, change bars, a minimap you can drag, soft wrap. |
 | **Dock** | Problems, Output, and the terminal. |
-| **Mission** | What state J.A.R.V.I.S. is in, a box to ask about the open file or the current selection, and a live feed of what he is doing. |
+| **Mission** | The conversation, in the editor. Ask about the open file or the current selection and the reply streams in right here — instrument calls in place, code blocks with *Copy* and *Insert*, and a *Stop* while it is working. One agent, one conversation, two views of it. |
 | **Status bar** | Workspace, problem count, line and column, indent width, line endings, language, wrap. Every one of them is a button. |
 
 ### The editor
@@ -815,6 +816,81 @@ It binds to `127.0.0.1` only, mints a random token at startup, and refuses any r
 that does not carry it or that claims a `Host` other than localhost. That last check is
 not decoration: J.A.R.V.I.S. runs shell commands, so an unguarded local port would be a
 remote code execution hole for any page in the browser.
+
+## Signing in
+
+The window has always been bound to loopback and gated on a per-session token,
+which answers *"can anything on the network reach this?"* It has never answered
+*"is this the person who started it?"* — anyone who walks up to an unlocked
+machine gets a shell, a file browser and an editor.
+
+This is that second answer, and it is **off by default**:
+
+```bash
+# a password
+python main.py set-password        # typed in, never written down
+# then, in .env
+DESKTOP_AUTH_MODE=password
+
+# ...or Google
+DESKTOP_AUTH_MODE=google
+GOOGLE_CLIENT_ID=1234567890-abc.apps.googleusercontent.com
+
+# ...or either
+DESKTOP_AUTH_MODE=any
+```
+
+With it on, `/` serves a lock screen instead of the application, and the lock
+screen is given the theme and nothing else — no token, no workspace path, no
+model name, nothing about the session behind it. Signing in mints a session
+cookie (`HttpOnly`, `SameSite=Strict`, in memory so a restart signs everyone
+out), and only then does the browser get the page — which is what hands out the
+token. Every route then needs both. The `Host` and `Origin` checks are untouched
+underneath: this is a third layer, not a replacement for the two below it.
+
+Six wrong guesses in a minute and the door stops answering for a minute. Not
+much against someone with local access, who has better options than the login
+form; a great deal against a guessable password.
+
+### The password is not in the code
+
+You asked for it to be saved in the code. It is saved, but as a **salted scrypt
+hash** in `.jarvis_credentials.json` beside the profile, mode `0600`, ignored by
+git — not as a literal in a Python file. That is a deliberate departure and the
+reason is short: this repository gets pushed to GitHub, so a password written
+into a source file is a password published to the internet, along with every
+other place you happen to use it. `python main.py set-password` reads it from
+the terminal, hashes it, and forgets it. `clear-password` removes it.
+
+scrypt at N=2¹⁵ takes about a tenth of a second per attempt, which nobody
+notices once per sign-in and which makes a dictionary sweep hopeless.
+
+### Google
+
+OAuth 2.0 with PKCE on a loopback redirect — the flow Google documents for
+native applications. Make a **Desktop app** client in a Google Cloud project and
+put its ID in `GOOGLE_CLIENT_ID`; its "secret", if it has one, is not
+confidential on a user's machine and PKCE is what actually protects the exchange,
+so `GOOGLE_CLIENT_SECRET` is optional.
+
+The code is exchanged by this process, directly with Google's token endpoint,
+over TLS. The ID token therefore arrives over an authenticated channel rather
+than through the browser, which is Google's own documented exception to
+verifying its signature locally — and what keeps this inside the standard
+library instead of pulling in a JWT stack for one check. The claims are still
+checked: audience, issuer, expiry, and that the address is verified.
+
+Leave `GOOGLE_ALLOWED_ACCOUNTS` empty and the first account to sign in claims the
+window and is remembered; nobody else gets in after that. Set it to a list and
+only those addresses do.
+
+### What it is not
+
+A defence against a hostile process on the same machine. Something running as
+you can read the token out of the page, the cookie out of the browser, or simply
+the model's replies off the screen — and it could do all of that before any of
+this existed. What a lock screen defends against is the laptop left open, which
+is the threat that actually happens.
 
 ---
 
@@ -1043,7 +1119,7 @@ pip install pytest pytest-asyncio
 pytest -q
 ```
 
-Three hundred and sixteen tests, no Ollama daemon and no microphone, well
+Three hundred and seventy-four tests, no Ollama daemon and no microphone, well
 under two minutes. Most need no browser either; the handful in
 `tests/test_ui.py` drive the real front end through Playwright and skip
 themselves cleanly when it is not installed. The model is a scripted fake and the HUD is driven
@@ -1066,14 +1142,28 @@ interface rather than by reading it:
   deleted a line *and* opened the command palette on top of it;
 · the terminal is moved between the two surfaces, never duplicated;
 · typing into the page keeps the character that moved the focus;
-· `Esc` does not interrupt a running turn.
+· `Esc` does not interrupt a running turn;
+· a collapsed pane paints nothing over the pane beside it — measured on what is
+  actually painted, since `getBoundingClientRect` ignores `overflow: hidden`;
+· a turn asked from the Code surface appears on the Code surface.
 
 That includes the security properties — no token, wrong token,
 a forged `Host`, a cross-origin request and `../` in a static path are each
 asserted to be refused, and so are the workspace escapes the editor could
 otherwise become. Reads and writes go through one boundary and both are held to
 it: `../`, nested traversal, out-of-tree symlinks, an oversized save, a save
-with editing switched off, and a save over a file that changed underneath you. The colour engine is checked by arithmetic rather than against fixed
+with editing switched off, and a save over a file that changed underneath you.
+
+The lock has its own file. `tests/test_auth.py` holds the credential to its
+promises — the password never appears in the file that stores it, the same
+password hashes differently every time, a corrupt record refuses rather than
+crashes — and drives the Google exchange against a local stub that answers the
+way Google's token endpoint does, so a token for another client, from another
+issuer, past its expiry, on an unverified address, or replayed on a used state
+is each refused. `tests/test_desktop.py` then checks the door itself: a valid
+token alone opens nothing, the lock screen carries no token, both the cookie and
+the token are required, signing out puts the lock back, and the `Host` and
+`Origin` checks still apply to a signed-in request. The colour engine is checked by arithmetic rather than against fixed
 hex values: every derived text colour must clear WCAG AA against its own
 background, for the eight most awkward seeds on all three grounds.
 
@@ -1100,6 +1190,11 @@ Copy `.env.example` to `.env`. Every key is optional; the defaults are already s
 | `DESKTOP_SHELL_ENABLED` | `true` | Whether the window has a terminal at all |
 | `DESKTOP_EDIT_ENABLED` | `true` | Whether the editor may write to disk |
 | `DESKTOP_EDIT_MAX_BYTES` | `2000000` | Ceiling on one save |
+| `DESKTOP_AUTH_MODE` | `off` | `off` · `password` · `google` · `any` |
+| `DESKTOP_AUTH_TTL_HOURS` | `12` | How long a signed-in browser stays signed in |
+| `GOOGLE_CLIENT_ID` | *(empty)* | OAuth client from your Google Cloud project |
+| `GOOGLE_CLIENT_SECRET` | *(empty)* | Only if your client was registered with one |
+| `GOOGLE_ALLOWED_ACCOUNTS` | *(empty)* | Addresses allowed in; empty means the first to sign in |
 | `WORKSPACE_ROOT` | project directory | The boundary he may act inside freely |
 | `PERMISSION_MODE` | `ask` | `ask` · `allow` · `deny` for everything beyond it |
 | `ALLOWED_APPS` | *(empty)* | Applications that never need approval |
@@ -1128,10 +1223,12 @@ jarvis/
   ui.py              The classic HUD: pinned status strip above a scrolling shell
   tui.py             The full-screen HUD: transcript, instruments, modals
   desktop.py         The desktop HUD: local server, event stream, window
+  auth.py            The lock on the window: scrypt passwords, Google, sessions
   shell.py           The Terminal pane's shell: PowerShell, bash, zsh
   theme.py           The colour engine: one seed in, a whole interface out
   web/
     index.html       The desktop front end: one page, two surfaces
+    signin.html      The lock screen: self-contained, and given no token
     app.css          The conversation
     app.js           The conversation: transcript, composer, rail, shell, theme
     ide.css          The Code surface: glass, the editor, the panels

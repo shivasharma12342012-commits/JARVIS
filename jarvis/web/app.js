@@ -2071,6 +2071,21 @@ function boot() {
   Keys.init();
   setState(BOOT.state || 'idle');
 
+  // Only shown when there is something to sign out of. With the lock off the
+  // button would just be a control that does nothing.
+  const account = BOOT.auth || {};
+  if (account.required) {
+    const signout = $('btn-signout');
+    signout.hidden = false;
+    const who = (BOOT.identity && BOOT.identity.subject) || '';
+    signout.title = who ? 'Sign out (' + who + ')' : 'Sign out';
+    signout.onclick = () => {
+      api('/api/auth/logout', {})
+        .then(() => location.replace('/'))
+        .catch(() => location.replace('/'));
+    };
+  }
+
   $('btn-palette').onclick = () => Studio.toggle();
   $('btn-command').onclick = () => Palette.show();
   $('btn-rail').onclick = () => Shell.toggle('rail');

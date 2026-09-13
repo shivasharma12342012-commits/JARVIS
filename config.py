@@ -183,6 +183,24 @@ class Settings(BaseSettings):
     #: you opened and grew must still be saveable.
     DESKTOP_EDIT_MAX_BYTES: int = 2_000_000
 
+    # -- Who may open the window --------------------------------------------------
+    #: "off" (the default), "password", "google", or "any" for either. The window
+    #: has always been loopback-only and token-gated, which answers whether
+    #: something on the network can reach it. This answers whether the person at
+    #: the keyboard is the one who started it.
+    DESKTOP_AUTH_MODE: str = "off"
+    #: How long a signed-in browser stays signed in. Sessions live in memory, so
+    #: restarting J.A.R.V.I.S. signs everyone out regardless.
+    DESKTOP_AUTH_TTL_HOURS: float = 12.0
+    #: The OAuth client from your Google Cloud project. A Desktop-app client is
+    #: the right kind; its "secret" is not confidential on a user's machine and
+    #: PKCE is what actually protects the flow, so leaving it unset is fine.
+    GOOGLE_CLIENT_ID: str = ""
+    GOOGLE_CLIENT_SECRET: str = ""
+    #: Addresses allowed to sign in, space- or comma-separated. Left empty, the
+    #: first account to sign in claims the window and is remembered.
+    GOOGLE_ALLOWED_ACCOUNTS: str = ""
+
     # -- Tools --------------------------------------------------------------------
     WORKSPACE_ROOT: Path = PROJECT_ROOT
     FILE_OPS_MAX_BYTES: int = 200_000

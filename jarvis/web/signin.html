@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en" data-mode="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<title>J.A.R.V.I.S.</title>
+<!-- The operator's colours, inlined so the lock screen is already theirs. This
+     page gets the theme and nothing else: no session token, no workspace path,
+     no model name, nothing about what is running behind it. Everything it knows
+     is in __JARVIS_SIGNIN__ below, and that is four booleans and a name. -->
+<style id="theme-vars">__JARVIS_THEME_CSS__</style>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='38' fill='none' stroke='%238b9099' stroke-width='7'/><circle cx='50' cy='50' r='15' fill='%238b9099'/></svg>">
+<style>
+/* Self-contained on purpose. A stylesheet fetched from /static would be one
+   more thing served to a browser that has not signed in yet. */
+* { box-sizing: border-box; }
+/* `display: flex` on a rule beats the `hidden` attribute on specificity, so
+   without this the OR divider shows with nothing on the other side of it. */
+[hidden] { display: none !important; }
+html, body { height: 100%; }
+body {
+  margin: 0; display: grid; place-items: center; padding: 24px;
+  background: var(--bg); color: var(--text);
+  font-family: var(--font-ui); font-size: 14px; -webkit-font-smoothing: antialiased;
+}
+.sky { position: fixed; inset: 0; overflow: hidden; pointer-events: none; z-index: 0; }
+.sky i {
+  position: absolute; display: block; border-radius: 50%; filter: blur(100px);
+  opacity: calc(.30 + .5 * var(--glow-strength, .1));
+}
+.sky .a { width: 62vw; height: 62vw; left: -18vw; top: -24vw;
+          background: radial-gradient(circle, var(--accent) 0%, transparent 66%);
+          animation: drift 53s ease-in-out infinite; }
+.sky .b { width: 54vw; height: 54vw; right: -18vw; bottom: -22vw;
+          background: radial-gradient(circle, var(--secondary) 0%, transparent 66%);
+          animation: drift 71s ease-in-out infinite reverse; }
+@keyframes drift {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  50%      { transform: translate3d(5vw, 4vh, 0) scale(1.12); }
+}
+
+.card {
+  position: relative; z-index: 1; width: min(380px, 100%);
+  padding: 30px 28px 24px; border-radius: var(--radius-lg);
+  border: 1px solid var(--line-strong);
+  background: color-mix(in srgb, var(--surface) 86%, transparent);
+  backdrop-filter: blur(26px) saturate(1.5);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 14%, transparent),
+              0 30px 70px -34px var(--shadow);
+  animation: rise .4s cubic-bezier(.22, .92, .26, 1.04);
+}
+@keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+
+.mark { display: grid; place-items: center; margin-bottom: 16px; }
+.mark svg { width: 46px; height: 46px; }
+h1 {
+  margin: 0 0 4px; text-align: center; font-family: var(--font-display);
+  font-size: 19px; font-weight: 400; letter-spacing: .14em; color: var(--text);
+}
+.sub { margin: 0 0 22px; text-align: center; font-size: 12px; color: var(--text-faint); }
+
+label { display: block; margin-bottom: 6px; font-size: 11px; color: var(--text-dim);
+        letter-spacing: .06em; text-transform: uppercase; }
+input[type="password"] {
+  width: 100%; height: 38px; padding: 0 12px; margin-bottom: 12px;
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  background: var(--bg-deep); color: var(--text);
+  font: 400 14px var(--font-ui); outline: none;
+  transition: border-color .18s ease, box-shadow .18s ease;
+}
+input[type="password"]:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+button {
+  width: 100%; height: 38px; border-radius: var(--radius-sm); border: 1px solid transparent;
+  font: 500 13px var(--font-ui); cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center; gap: 9px;
+  transition: transform .16s cubic-bezier(.22,.92,.26,1.04), filter .18s ease, background .18s ease;
+}
+button:active { transform: scale(.985); }
+button[disabled] { opacity: .55; cursor: default; }
+.primary { background: var(--accent); color: var(--on-accent); }
+.primary:hover:not([disabled]) { filter: brightness(1.08); }
+.google {
+  background: var(--surface-2); color: var(--text); border-color: var(--line-strong);
+  margin-top: 4px; text-decoration: none;
+}
+.google:hover { background: var(--surface-3); }
+.google svg { width: 17px; height: 17px; }
+
+.rule { display: flex; align-items: center; gap: 10px; margin: 16px 0 12px;
+        font-size: 10px; color: var(--text-faint); letter-spacing: .1em; }
+.rule::before, .rule::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+
+.note {
+  margin: 14px 0 0; padding: 9px 11px; border-radius: var(--radius-sm);
+  font-size: 11.5px; line-height: 1.5;
+  border: 1px solid var(--line); color: var(--text-dim); background: var(--surface-2);
+}
+.note.bad { border-color: color-mix(in srgb, var(--danger) 50%, transparent);
+            color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
+.note code { font-family: var(--font-mono); font-size: 11px; }
+.note[hidden] { display: none; }
+.foot { margin: 18px 0 0; text-align: center; font-size: 10.5px; color: var(--text-faint); }
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}
+</style>
+</head>
+<body>
+
+<div class="sky" aria-hidden="true"><i class="a"></i><i class="b"></i></div>
+
+<main class="card">
+  <div class="mark" aria-hidden="true">
+    <svg viewBox="0 0 100 100">
+      <circle cx="50" cy="50" r="38" fill="none" stroke="var(--accent)" stroke-width="6" opacity=".5"/>
+      <circle cx="50" cy="50" r="15" fill="var(--accent)"/>
+    </svg>
+  </div>
+
+  <h1 id="wordmark">J.A.R.V.I.S.</h1>
+  <p class="sub">This window is locked.</p>
+
+  <form id="password-form" hidden>
+    <label for="password">Password</label>
+    <input type="password" id="password" autocomplete="current-password"
+           autofocus spellcheck="false" aria-describedby="message">
+    <button type="submit" class="primary" id="unlock">Unlock</button>
+  </form>
+
+  <div class="rule" id="rule" hidden>OR</div>
+
+  <a class="google" id="google" href="/api/auth/google/start" role="button" hidden>
+    <svg viewBox="0 0 48 48" aria-hidden="true">
+      <path fill="#4285F4" d="M45.1 24.5c0-1.6-.1-2.8-.4-4H24v7.3h12.1c-.2 2-1.6 5-4.5 7l-.1.3 6.5 5 .5.1c4.2-3.9 6.6-9.5 6.6-15.7"/>
+      <path fill="#34A853" d="M24 46c5.9 0 10.9-2 14.5-5.3l-6.9-5.4c-1.9 1.3-4.4 2.2-7.6 2.2-5.8 0-10.7-3.8-12.5-9.1l-.3 0-6.7 5.2-.1.3C7.9 41 15.3 46 24 46"/>
+      <path fill="#FBBC05" d="M11.5 28.4c-.5-1.4-.7-2.9-.7-4.4s.3-3 .7-4.4l0-.3-6.8-5.3-.2.1A22 22 0 0 0 2 24c0 3.5.9 6.9 2.5 9.9z"/>
+      <path fill="#EB4335" d="M24 9.5c4.1 0 6.9 1.8 8.5 3.3l6.2-6C34.9 3.4 29.9 1 24 1 15.3 1 7.9 6 4.5 13.3l7 5.4C13.3 13.4 18.2 9.5 24 9.5"/>
+    </svg>
+    Continue with Google
+  </a>
+
+  <p class="note" id="message" role="status" hidden></p>
+  <p class="foot">Running on this machine only, on 127.0.0.1.</p>
+</main>
+
+<script>
+/* Everything this page knows, substituted server-side. Four booleans, a mode,
+   an agent name and possibly an error. */
+const INFO = __JARVIS_SIGNIN__;
+
+const $ = (id) => document.getElementById(id);
+const message = $('message');
+
+function say(text, bad) {
+  message.innerHTML = text;
+  message.hidden = !text;
+  message.classList.toggle('bad', !!bad);
+}
+
+$('wordmark').textContent = INFO.agent || 'J.A.R.V.I.S.';
+
+const wantsPassword = INFO.password;
+const wantsGoogle = INFO.google;
+$('password-form').hidden = !wantsPassword;
+$('google').hidden = !wantsGoogle;
+$('rule').hidden = !(wantsPassword && wantsGoogle);
+
+if (INFO.error) say(INFO.error, true);
+else if (wantsPassword && !INFO.passwordSet) {
+  // A form that cannot be satisfied is worse than no form. Say what to run.
+  $('password-form').hidden = true;
+  $('rule').hidden = true;
+  say('No password has been set yet. Run <code>python main.py set-password</code> ' +
+      'in a terminal, then reload this page.');
+} else if (!wantsPassword && !wantsGoogle) {
+  say('Sign-in is switched on, but neither a password nor a Google client is ' +
+      'configured. Check <code>DESKTOP_AUTH_MODE</code> in your .env.', true);
+}
+
+let locked = Number(INFO.lockedFor || 0);
+const unlock = $('unlock');
+
+function countdown() {
+  if (locked <= 0) { unlock.disabled = false; unlock.textContent = 'Unlock'; return; }
+  unlock.disabled = true;
+  unlock.textContent = 'Locked for ' + Math.ceil(locked) + 's';
+  locked -= 1;
+  setTimeout(countdown, 1000);
+}
+if (locked > 0) { say('Too many attempts.', true); countdown(); }
+
+$('password-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const value = $('password').value;
+  if (!value) return;
+  unlock.disabled = true;
+  unlock.textContent = 'Checking…';
+  try {
+    const response = await fetch('/api/auth/password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: value }),
+    });
+    const result = await response.json();
+    if (result.ok) {
+      unlock.textContent = 'Welcome back';
+      // A full navigation, not a fetch: the page that comes back is the
+      // application, and it needs to replace this one.
+      location.replace('/');
+      return;
+    }
+    say(result.error || 'that did not work', true);
+    $('password').value = '';
+    $('password').focus();
+    locked = Number(result.lockedFor || 0);
+    if (locked > 0) countdown();
+    else { unlock.disabled = false; unlock.textContent = 'Unlock'; }
+  } catch (err) {
+    say('Could not reach J.A.R.V.I.S.: ' + err.message, true);
+    unlock.disabled = false;
+    unlock.textContent = 'Unlock';
+  }
+});
+</script>
+</body>
+</html>

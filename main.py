@@ -164,8 +164,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "command",
         nargs="?",
         default=None,
-        choices=["desktop", "app", "gui", "window"],
-        help='"desktop" opens the windowed front end instead of the terminal one',
+        choices=["desktop", "app", "gui", "window", "set-password", "clear-password"],
+        help='"desktop" opens the windowed front end; "set-password" locks it',
     )
     parser.add_argument(
         "--desktop",
@@ -2278,6 +2278,50 @@ def run_daemon() -> int:
         voice.shutdown()
 
 
+def manage_password(clearing: bool = False) -> int:
+    """Set or remove the desktop window's password.
+
+    Typed here rather than written anywhere, and stored as a salted scrypt hash
+    in ``.jarvis_credentials.json`` beside the profile. Putting a password in a
+    source file would publish it to wherever the repository is pushed, along
+    with every other place the same password happens to be used.
+    """
+    import getpass
+
+    from jarvis import auth
+
+    if clearing:
+        if not auth.has_password():
+            print("No password is set.")
+            return 0
+        auth.clear_password()
+        print("The password has been removed.")
+        if auth.mode() in ("password", "any"):
+            print("DESKTOP_AUTH_MODE is still set, so the window will have no way to unlock.")
+        return 0
+
+    try:
+        first = getpass.getpass("New password: ")
+        second = getpass.getpass("Again: ")
+    except (EOFError, KeyboardInterrupt):
+        print("\nNothing was changed.")
+        return 1
+
+    if first != second:
+        print("Those did not match. Nothing was changed.")
+        return 1
+    try:
+        auth.set_password(first)
+    except ValueError as error:
+        print(f"{error}. Nothing was changed.")
+        return 1
+
+    print(f"Saved a hash of it to {auth.CREDENTIALS_PATH}.")
+    if auth.mode() == "off":
+        print("Set DESKTOP_AUTH_MODE=password in your .env to make the window ask for it.")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Parse the command line, configure logging, and run the application."""
     force_utf8_output()
@@ -2317,6 +2361,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.locales:
         print(locales.report())
         return 0
+
+    if args.command in {"set-password", "clear-password"}:
+        return manage_password(args.command == "clear-password")
 
     if args.desktop or args.command in {"desktop", "app", "gui", "window"}:
         return run_desktop(args)
