@@ -796,3 +796,172 @@ def test_stopping_the_app_stops_the_shell(app):
     session = app._shell
     app.stop()
     assert _settle(lambda: not session.running)
+
+
+# ══ saving, searching and indexing ═══════════════════════════════════════════════════
+# The editor needs three things the viewer never did: to write a file back, to
+# find text across the tree, and to be told every path once so it can offer them
+# by name. All three go through the same resolve-then-compare boundary as the
+# reader, and these hold them to it.
+def test_a_file_can_be_written_back(workspace):
+    result = workspace.write("pkg/mod.py", "x = 9\n")
+    assert result["ok"] is True and result["lines"] == 2
+    assert workspace.read("pkg/mod.py")["content"] == "x = 9\n"
+
+
+def test_a_write_creates_the_directories_it_needs(workspace):
+    assert workspace.write("deep/er/still.py", "pass\n")["ok"] is True
+    assert workspace.read("deep/er/still.py")["content"] == "pass\n"
+
+
+def test_a_write_leaves_no_temporary_file_behind(workspace):
+    workspace.write("pkg/mod.py", "x = 1\n")
+    leftovers = [p.name for p in workspace.root.rglob("*.jarvis-save")]
+    assert leftovers == []
+
+
+@pytest.mark.parametrize("escape", ["../outside.py", "pkg/../../away.py", "../../../tmp/away"])
+def test_a_write_cannot_escape_the_workspace(workspace, escape):
+    result = workspace.write(escape, "owned")
+    assert result["ok"] is False and "outside the workspace" in result["error"]
+
+
+def test_an_absolute_path_is_written_inside_the_workspace(workspace):
+    """The same rule the reader uses, for the same reason: one boundary, decided
+    in one place. A path that looks absolute is taken as workspace-relative
+    rather than refused, so `/etc/passwd` lands at `<workspace>/etc/passwd` and
+    touches nothing outside the tree."""
+    assert workspace.write("/etc/passwd", "harmless\n")["ok"] is True
+    assert (workspace.root / "etc" / "passwd").read_text() == "harmless\n"
+
+
+def test_a_write_over_a_changed_file_is_refused_rather_than_silent(workspace):
+    """An agent turn rewriting the file you have open is the ordinary case."""
+    opened = workspace.read("pkg/mod.py")
+    (workspace.root / "pkg" / "mod.py").write_text("someone else got here\n", encoding="utf-8")
+    refused = workspace.write("pkg/mod.py", "mine\n", expect=opened["digest"])
+    assert refused["ok"] is False and refused["stale"] is True
+    assert (workspace.root / "pkg" / "mod.py").read_text() == "someone else got here\n"
+    # Without the expectation it is an ordinary overwrite, which is what the
+    # editor asks for once the operator has been told and said yes.
+    assert workspace.write("pkg/mod.py", "mine\n")["ok"] is True
+
+
+def test_a_write_larger_than_the_cap_is_refused(workspace, monkeypatch):
+    from config import settings
+
+    monkeypatch.setattr(settings, "DESKTOP_EDIT_MAX_BYTES", 16)
+    result = workspace.write("pkg/mod.py", "x" * 64)
+    assert result["ok"] is False and "limit" in result["error"]
+
+
+def test_saving_can_be_switched_off_entirely(workspace, monkeypatch):
+    from config import settings
+
+    monkeypatch.setattr(settings, "DESKTOP_EDIT_ENABLED", False)
+    assert workspace.write("pkg/mod.py", "nope")["ok"] is False
+    assert workspace.read("pkg/mod.py")["editable"] is False
+
+
+def test_a_truncated_file_is_not_offered_as_editable(workspace, monkeypatch):
+    monkeypatch.setattr(desktop_mod, "MAX_FILE_BYTES", 4)
+    assert workspace.read("pkg/mod.py")["editable"] is False
+
+
+def test_the_search_finds_text_and_says_where(workspace):
+    found = workspace.search("y = 2")
+    assert found["hits"] == 1
+    assert found["files"][0]["path"] == "pkg/mod.py"
+    assert found["files"][0]["matches"][0]["line"] == 2
+
+
+def test_the_search_is_case_insensitive_unless_asked(workspace):
+    assert workspace.search("HELLO")["hits"] == 1
+    assert workspace.search("HELLO", case=True)["hits"] == 0
+
+
+def test_a_one_character_search_is_refused(workspace):
+    assert workspace.search("y")["error"]
+
+
+def test_the_search_does_not_read_binary_files(workspace):
+    """A PNG full of the needle by accident is not a search result."""
+    (workspace.root / "blob.py").write_bytes(b"needle\x00\x00needle")
+    assert workspace.search("needle")["hits"] == 0
+
+
+def test_the_index_lists_every_text_file_once(workspace):
+    paths = workspace.index()["paths"]
+    assert "pkg/mod.py" in paths and "readme.md" in paths
+    assert len(paths) == len(set(paths))
+    assert not any(p.startswith("__pycache__") or p.startswith(".git") for p in paths)
+
+
+def test_the_index_is_capped(workspace):
+    for i in range(20):
+        (workspace.root / f"n{i}.py").write_text("x\n", encoding="utf-8")
+    capped = workspace.index(limit=5)
+    assert len(capped["paths"]) == 5 and capped["truncated"] is True
+
+
+def test_the_new_routes_serve_the_workspace(app, tmp_path):
+    (tmp_path / "hello.py").write_text("print('hi')\n", encoding="utf-8")
+    app.workspace = desktop_mod.Workspace(tmp_path)
+
+    assert "hello.py" in get_json(app, "/api/index")["paths"]
+    assert get_json(app, "/api/search?q=print")["hits"] == 1
+    saved = post_json(app, "/api/save", {"path": "hello.py", "content": "print('bye')\n"})
+    assert saved["ok"] is True
+    assert (tmp_path / "hello.py").read_text() == "print('bye')\n"
+
+
+def test_the_save_route_refuses_to_escape(app, tmp_path):
+    app.workspace = desktop_mod.Workspace(tmp_path)
+    refused = post_json(app, "/api/save", {"path": "../owned.txt", "content": "x"})
+    assert refused["ok"] is False
+    assert not (tmp_path.parent / "owned.txt").exists()
+
+
+def test_the_new_routes_need_the_session_token(app):
+    for route in ("/api/index", "/api/search?q=print"):
+        with pytest.raises(urllib.error.HTTPError) as caught:
+            get_json(app, route, token="wrong")
+        assert caught.value.code == 403
+    with pytest.raises(urllib.error.HTTPError) as caught:
+        post_json(app, "/api/save", {"path": "x", "content": "y"}, token="wrong")
+    assert caught.value.code == 403
+
+
+def test_every_language_the_server_names_is_a_plain_identifier(workspace):
+    """The front end looks each one up in its own table; a stray name is a file
+    that silently renders as plain text."""
+    names = set(desktop_mod.LANGUAGES.values()) | set(desktop_mod.FILENAMES.values())
+    assert len(names) >= 30
+    assert all(name and name.replace("+", "").replace("#", "").isalnum() for name in names)
+
+
+def test_a_file_is_named_by_its_name_before_its_suffix(workspace):
+    (workspace.root / "Dockerfile").write_text("FROM x\n", encoding="utf-8")
+    (workspace.root / "Makefile").write_text("all:\n\techo\n", encoding="utf-8")
+    assert workspace.read("Dockerfile")["language"] == "dockerfile"
+    assert workspace.read("Makefile")["language"] == "makefile"
+
+
+def test_the_front_end_manifest_matches_what_is_shipped(tmp_path, monkeypatch):
+    """A half-copied install should name what is missing, not open an empty window."""
+    assert desktop_mod.available()[0] is True
+    for name in desktop_mod.FRONT_END_FILES:
+        assert (desktop_mod.WEB_ROOT / name).is_file(), name
+    monkeypatch.setattr(desktop_mod, "WEB_ROOT", tmp_path)
+    ok, why = desktop_mod.available()
+    assert ok is False and "ide.js" in why and "lang.js" in why
+
+
+def test_the_page_pulls_in_every_script_and_stylesheet(app):
+    """The token travels in the subresource URLs; a file left out of the page
+    is a file the browser never fetches, however present it is on disk."""
+    page = _request(app, "/").read().decode("utf-8")
+    for name in desktop_mod.FRONT_END_FILES:
+        if name == "index.html":
+            continue
+        assert f"/static/{name}?token=" in page, name

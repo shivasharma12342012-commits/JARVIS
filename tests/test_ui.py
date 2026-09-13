@@ -13,13 +13,17 @@ kept here is the handful of invariants that would silently rot without a guard.
 
 from __future__ import annotations
 
+import shutil
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
 from jarvis import desktop as desktop_mod
 from jarvis import theme as theme_mod
+
+PROJECT = Path(__file__).resolve().parent.parent
 
 sync_playwright = pytest.importorskip(
     "playwright.sync_api", reason="playwright is not installed"
@@ -42,8 +46,20 @@ def _chromium_path() -> str | None:
 
 
 @pytest.fixture(scope="module")
-def window():
-    """One running app and one browser page, shared by every test here."""
+def window(tmp_path_factory):
+    """One running app and one browser page, shared by every test here.
+
+    The workspace is a *copy*. These tests press Ctrl+S, and the editor saves
+    for real \u2014 that is the point of it \u2014 so pointing the window at the checkout
+    would mean the suite edits the source it is testing. It did, once, and left
+    a commented-out line in `theme.py`.
+    """
+    root = tmp_path_factory.mktemp("workspace")
+    (root / "jarvis").mkdir()
+    for name in ("theme.py", "desktop.py", "shell.py"):
+        shutil.copy(PROJECT / "jarvis" / name, root / "jarvis" / name)
+    shutil.copy(PROJECT / "main.py", root / "main.py")
+
     app = desktop_mod.DesktopApp(
         desktop_mod.AttachedBackend(
             on_submit=lambda text: None,
@@ -52,6 +68,7 @@ def window():
         open_window_on_start=False,
         theme=theme_mod.PRESETS["graphite"],
     )
+    app.workspace = desktop_mod.Workspace(root)
     url = app.start()
     playwright = sync_playwright().start()
     try:
@@ -75,10 +92,26 @@ def window():
         app.stop()
 
 
+def test_these_tests_cannot_edit_the_checkout(window):
+    """The editor saves for real, so the window must never point at the source.
+
+    It did, and a Ctrl+S in the shortcut test below left a commented-out line in
+    `jarvis/theme.py`. This runs first so a fixture that regresses fails here
+    rather than in whatever it happens to overwrite.
+    """
+    page, app, errors = window
+    root = Path(app.workspace.root)
+    assert root != PROJECT
+    assert PROJECT not in root.parents and root not in PROJECT.parents
+
+
 def test_the_page_boots_without_a_single_error(window):
     page, app, errors = window
     assert errors == []
     assert page.evaluate("typeof Shell") == "object"
+    assert page.evaluate("typeof Lang") == "object"
+    assert page.evaluate("typeof Ide") == "object"
+    assert page.evaluate("Lang.catalogue().length") >= 30
 
 
 @pytest.mark.parametrize("width", [1600, 1280, 1180, 1100, 900, 880, 760, 430])
@@ -167,35 +200,127 @@ def test_restoring_a_view_does_not_force_the_rail_open(window):
     page.wait_for_timeout(300)
 
 
-def test_copying_code_does_not_bring_the_line_numbers(window):
-    """`user-select: none` does not keep a gutter out of a spanning selection.
+def test_the_two_layers_of_the_editor_stay_in_register(window):
+    """The invariant the whole editor rests on.
 
-    The numbers are drawn with generated content instead, which no selection
-    can ever include.
+    A transparent textarea sits exactly on top of a highlighted copy of the same
+    text. If the painted layer ever differs from the buffer by so much as one
+    character — an invented space on a blank line inside a docstring was the
+    first way this broke — every glyph after it slides out from under the caret.
     """
     page, app, errors = window
-    page.evaluate("Rail.show('code'); Code.open('jarvis/theme.py')")
-    page.wait_for_function("document.querySelectorAll('#code-body tr').length > 50", timeout=15000)
-    picked = page.evaluate("""() => {
-        const rows = [...document.querySelectorAll('#code-body tr')].slice(20, 30);
-        const range = document.createRange();
-        range.setStartBefore(rows[0]); range.setEndAfter(rows[rows.length - 1]);
-        const sel = window.getSelection();
-        sel.removeAllRanges(); sel.addRange(range);
-        const text = String(sel); sel.removeAllRanges(); return text;
+    page.evaluate("Ide.surface('code'); Ide.open('jarvis/theme.py')")
+    page.wait_for_function("document.querySelectorAll('#lin .eline').length > 300", timeout=20000)
+    assert _aligned(page) is None
+
+    # And it has to survive an edit that opens a block running past the line.
+    page.evaluate("IdeEd.goto(1, 0)")
+    page.click("#ed-input")
+    page.keyboard.type('"""')
+    page.wait_for_timeout(400)
+    assert _aligned(page) is None
+    page.keyboard.press("Control+z")
+    page.wait_for_timeout(400)
+    assert _aligned(page) is None
+    page.evaluate("Ide.order.slice().forEach((p) => { "
+                  "const d = Ide.docs.get(p); d.saved = d.text; Ide.close(p); })")
+    page.evaluate("Ide.surface('chat')")
+    page.wait_for_timeout(300)
+
+
+def _aligned(page):
+    """``None`` when the painted layer is the buffer, a description when it is not."""
+    return page.evaluate(r"""() => {
+      const text = document.getElementById('ed-input').value;
+      const painted = [...document.querySelectorAll('#lin .eline')]
+        .map((n) => n.textContent.replace(/\u00a0/g, '')).join('\n');
+      if (painted === text) return null;
+      const a = painted.split('\n'), b = text.split('\n');
+      if (a.length !== b.length) return 'painted ' + a.length + ', buffer ' + b.length;
+      for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return 'line ' + (i + 1);
+      return 'unknown';
     }""")
-    numbered = [
-        line for line in picked.splitlines()
-        if line.strip() and line.strip().split()[0].isdigit()
-    ]
-    assert numbered == [], numbered
-    assert page.evaluate("document.querySelectorAll('#code-body tr').length") > 50
+
+
+def test_an_editor_shortcut_does_not_also_fire_the_conversations(window):
+    """Ctrl+Shift+K deleted a line *and* opened the command palette over it.
+
+    The palette was bound to Ctrl+K without excluding Shift, and the editor did
+    not stop the event propagating to the document. Both halves are fixed; this
+    guards both, because either one alone lets it back.
+    """
+    page, app, errors = window
+    page.evaluate("Ide.surface('code'); Ide.open('jarvis/theme.py')")
+    page.wait_for_function("document.querySelectorAll('#lin .eline').length > 50", timeout=20000)
+    page.click("#ed-input")
+    for combination in ("Control+Shift+k", "Control+d", "Control+Slash", "Control+s"):
+        page.keyboard.press(combination)
+        page.wait_for_timeout(180)
+        open_overlays = page.evaluate("""() => ['palette-wrap', 'quick-wrap', 'keys-wrap', 'studio']
+            .filter((id) => !document.getElementById(id).hidden)""")
+        assert open_overlays == [], f"{combination} opened {open_overlays}"
+    page.evaluate("Ide.order.slice().forEach((p) => { "
+                  "const d = Ide.docs.get(p); d.saved = d.text; Ide.close(p); })")
+    page.evaluate("Ide.surface('chat')")
+    page.wait_for_timeout(300)
+
+
+def test_the_code_surface_keeps_its_editor_at_every_width(window):
+    """The same collapse the conversation had, in the surface next door."""
+    page, app, errors = window
+    page.evaluate("Ide.surface('code')")
+    for width in (1600, 1240, 1180, 1000, 900, 700, 430):
+        page.set_viewport_size({"width": width, "height": 820})
+        page.wait_for_timeout(300)
+        measured = page.evaluate(
+            "() => document.getElementById('stage').getBoundingClientRect().width")
+        assert measured > 150, f"the editor stage is {measured}px at {width}px"
+        assert page.evaluate(
+            "() => document.getElementById('abar').getBoundingClientRect().width") > 20
+        assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1")
+    page.set_viewport_size({"width": 1600, "height": 950})
+    page.evaluate("Ide.surface('chat')")
+    page.wait_for_timeout(400)
+
+
+def test_the_terminal_is_moved_between_surfaces_not_duplicated(window):
+    """Two terminals would be two scrollbacks disagreeing about one shell."""
+    page, app, errors = window
+    page.evaluate("Ide.surface('code'); Ide.dock.show('terminal')")
+    page.wait_for_timeout(400)
+    assert page.evaluate("document.querySelectorAll('#shell-host').length") == 1
+    assert page.evaluate("document.getElementById('shell-host').parentElement.id") == "dock-terminal"
+    page.evaluate("Ide.surface('chat')")
+    page.wait_for_timeout(400)
+    assert page.evaluate("document.querySelectorAll('#shell-host').length") == 1
+    assert page.evaluate("document.getElementById('shell-host').parentElement.id") == "view-terminal"
+
+
+def test_typing_into_the_page_keeps_the_character(window):
+    """Focus used to move to the composer without the key that moved it."""
+    page, app, errors = window
+    page.evaluate("Ide.surface('chat'); document.getElementById('input').value = ''")
+    page.click(".transcript")
+    page.keyboard.type("abc")
+    page.wait_for_timeout(250)
+    assert page.evaluate("document.getElementById('input').value") == "abc"
+    page.evaluate("document.getElementById('input').value = ''")
+
+
+def test_escape_does_not_interrupt_a_running_turn(window):
+    """It did, which made a reflex into a way to lose work in progress."""
+    page, app, errors = window
+    page.evaluate("state.busy = true")
+    page.keyboard.press("Escape")
+    page.wait_for_timeout(250)
+    assert page.evaluate("state.busy") is True
+    page.evaluate("state.busy = false")
 
 
 def test_the_agent_pane_marks_its_own_tab(window):
     """It used to put its unread pip on the Terminal tab, which is the shell."""
     page, app, hud_errors = window
-    page.evaluate("Rail.show('code'); Rail.unmark('agent'); Rail.unmark('terminal')")
+    page.evaluate("Rail.show('logs'); Rail.unmark('agent'); Rail.unmark('terminal')")
     page.wait_for_timeout(250)
     app.hud.log_system("something for the agent pane", "info")
     page.wait_for_timeout(500)

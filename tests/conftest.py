@@ -36,3 +36,26 @@ def _quiet_settings():
     yield
     for name, value in before.items():
         setattr(settings, name, value)
+
+
+#: The colour tables the front ends read at paint time. ``apply_theme`` rewrites
+#: them in place -- deliberately, because a running HUD has to change colour
+#: without being rebuilt -- so one test that applies a theme leaves every later
+#: test wearing it. Snapshotting the tables is the only way a suite that both
+#: applies themes and asserts on them can run in any order.
+@pytest.fixture(autouse=True)
+def _pristine_palettes():
+    from jarvis import tui as tui_mod
+    from jarvis import ui as ui_mod
+
+    tables = [
+        (tui_mod.INKS, dict(tui_mod.INKS)),
+        (tui_mod.THEMES, dict(tui_mod.THEMES)),
+        (ui_mod.PALETTES, dict(ui_mod.PALETTES)),
+    ]
+    ink = tui_mod.INK
+    yield
+    for table, before in tables:
+        table.clear()
+        table.update(before)
+    tui_mod.INK = ink

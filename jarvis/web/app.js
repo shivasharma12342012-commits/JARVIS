@@ -1018,7 +1018,12 @@ const Palette = {
     })).concat([
       { label: 'Colours', what: 'Open the theme studio', run: () => Studio.show() },
       { label: 'Surprise me', what: 'A random theme that still looks good', run: () => Studio.push({ surprise: true }) },
-      { label: 'Code', what: 'Files and the code viewer', run: () => Rail.show('code') },
+      { label: 'Code', what: 'The editor, the tree and the terminal',
+        run: () => Ide.surface('code') },
+      { label: 'Open a file\u2026', what: 'Find a file by name in the workspace',
+        run: () => { Ide.surface('code'); setTimeout(() => Ide.quick.show(), 60); } },
+      { label: 'Search the workspace', what: 'Find text across every file',
+        run: () => { Ide.surface('code'); setTimeout(() => Ide.panels.show('search'), 60); } },
       { label: 'Terminal', what: 'The system shell', run: () => Rail.show('terminal') },
       { label: 'Agent', what: 'The agentic HUD, live', run: () => Rail.show('agent') },
       { label: 'Logs', what: 'This session as it happens', run: () => Rail.show('logs') },
@@ -1209,7 +1214,7 @@ const EDGE_WIDTH = 38;
 /* =============================================================================
    The right panel
    ============================================================================= */
-const VIEWS = ['code', 'terminal', 'agent', 'logs', 'system'];
+const VIEWS = ['terminal', 'agent', 'logs', 'system'];
 
 const Rail = {
   view: 'terminal',
@@ -1632,7 +1637,7 @@ const Tree = {
       row.onclick = () => {
         document.querySelectorAll('.tree .row.on').forEach((r) => r.classList.remove('on'));
         row.classList.add('on');
-        Code.open(entry.path);
+        Ide.open(entry.path);
       };
     }
     return wrap;
@@ -1661,340 +1666,13 @@ function bytes(n) {
 }
 
 /* =============================================================================
-   Syntax highlighting
+   Where the code viewer used to be
 
-   Small and deliberately generic: one tokeniser, a per-language keyword list,
-   and the theme's own colours. It is not a parser and does not pretend to be —
-   it is here so a file is pleasant to read, and it degrades to plain text on
-   anything it does not recognise rather than mangling it.
-
-   It runs on escaped text and emits only spans with fixed class names, so a
-   file full of angle brackets is coloured, not executed.
+   Reading a file, colouring it and editing it all moved to the Code surface —
+   `lang.js` for the grammar, `ide.js` for the editor. The conversation keeps
+   fenced code blocks and nothing else, which is the right amount of code for a
+   pane you read prose in. Opening a file from the tree hands off to the editor.
    ============================================================================= */
-const KEYWORDS = {
-  python: 'False None True and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield match case self cls',
-  javascript: 'async await break case catch class const continue debugger default delete do else export extends finally for from function if import in instanceof let new of return static super switch this throw try typeof var void while with yield true false null undefined',
-  typescript: 'abstract any as async await boolean break case catch class const continue declare default delete do else enum export extends finally for from function if implements import in instanceof interface let namespace new number of private protected public readonly return static string super switch this throw try type typeof var void while yield true false null undefined',
-  rust: 'as async await break const continue crate dyn else enum extern false fn for if impl in let loop match mod move mut pub ref return self Self static struct super trait true type unsafe use where while',
-  go: 'break case chan const continue default defer else fallthrough for func go goto if import interface map package range return select struct switch type var true false nil',
-  c: 'auto break case char const continue default do double else enum extern float for goto if inline int long register return short signed sizeof static struct switch typedef union unsigned void volatile while',
-  java: 'abstract assert boolean break byte case catch char class const continue default do double else enum extends final finally float for if implements import instanceof int interface long native new package private protected public return short static super switch synchronized this throw throws transient try void volatile while true false null',
-  bash: 'if then else elif fi for while do done case esac function return local export readonly declare source alias unset shift exit trap set',
-  sql: 'select from where insert into update delete create table drop alter add join left right inner outer on group by order having limit offset union all as and or not null distinct values set index primary key foreign references',
-  css: 'important media supports keyframes import charset font-face root and not or from to',
-  yaml: 'true false null yes no on off',
-  json: 'true false null',
-  html: '',
-  markdown: '',
-  text: '',
-};
-KEYWORDS.cpp = KEYWORDS.c + ' bool catch class constexpr delete explicit friend namespace new nullptr operator private protected public template this throw try typename using virtual';
-KEYWORDS.kotlin = KEYWORDS.java;
-KEYWORDS.ruby = 'def end class module if elsif else unless while until for in do return yield begin rescue ensure raise nil true false self require attr_accessor';
-KEYWORDS.php = KEYWORDS.c + ' echo function foreach as namespace use public private protected class extends implements new $this';
-KEYWORDS.toml = KEYWORDS.ini = KEYWORDS.yaml;
-KEYWORDS.swift = KEYWORDS.java;
-
-/* Line comment openers by language, so a comment is a comment and not a
-   division sign. */
-const LINE_COMMENT = {
-  python: '#', bash: '#', yaml: '#', toml: '#', ini: '#', r: '#', ruby: '#',
-  javascript: '//', typescript: '//', rust: '//', go: '//', c: '//', cpp: '//',
-  java: '//', kotlin: '//', swift: '//', php: '//', dart: '//', scala: '//',
-  sql: '--', lua: '--', haskell: '--',
-};
-
-/* Openers that run past the end of a line. Without these a Python docstring is
-   tokenised as code for its whole length, which is the single most obvious way
-   a highlighter can look broken. `state` is threaded down the file by the
-   caller and carries which one, if any, is still open. */
-const BLOCK_MARKS = {
-  python: ['\u0022\u0022\u0022', "'''"],
-  javascript: ['/*'], typescript: ['/*'], c: ['/*'], cpp: ['/*'], java: ['/*'],
-  css: ['/*'], rust: ['/*'], go: ['/*'], php: ['/*'], swift: ['/*'], kotlin: ['/*'],
-  html: ['<!--'], xml: ['<!--'], markdown: [],
-};
-const BLOCK_CLOSE = { '<!--': '-->', '/*': '*/' };
-
-function highlight(line, language, state) {
-  const escaped = esc(line);
-  if (!language || language === 'text') return escaped;
-
-  const words = KEYWORDS[language];
-  const keywords = words ? new Set(words.split(' ')) : null;
-  const comment = LINE_COMMENT[language];
-  const marks = BLOCK_MARKS[language] || [];
-
-  // Already inside a block that opened on an earlier line: colour up to its
-  // close and hand the rest back to the normal pass.
-  if (state && state.open) {
-    const closer = esc(BLOCK_CLOSE[state.open] || state.open);
-    const at = escaped.indexOf(closer);
-    const cls = state.open === '/*' || state.open === '<!--' ? 'tok-com' : 'tok-str';
-    if (at === -1) return '<span class="' + cls + '">' + (escaped || ' ') + '</span>';
-    state.open = null;
-    const head = escaped.slice(0, at + closer.length);
-    return '<span class="' + cls + '">' + head + '</span>' +
-           highlight(unesc(escaped.slice(at + closer.length)), language, state);
-  }
-
-  // One pass, left to right. Strings and comments swallow everything inside
-  // them, which is the only way a single regex sweep gets those two right.
-  let out = '';
-  let i = 0;
-  const n = escaped.length;
-
-  while (i < n) {
-    const rest = escaped.slice(i);
-
-    // Entities first, always. esc() has already turned & < > " ' into entities,
-    // and any rule that consumes one of those bytes on its own splits the
-    // entity in half — which reaches the screen as a literal `&quot;`.
-    const entity = rest.match(/^&(?:[a-z]+|#\d+);/);
-    if (entity && !rest.startsWith('&quot;') && !rest.startsWith('&#39;')) {
-      out += entity[0];
-      i += entity[0].length;
-      continue;
-    }
-
-    // A block that opens and does not close on this line takes the remainder
-    // and is remembered for the next one.
-    let opened = null;
-    for (let m = 0; m < marks.length; m++) {
-      if (rest.startsWith(esc(marks[m]))) { opened = marks[m]; break; }
-    }
-    if (opened) {
-      const closer = esc(BLOCK_CLOSE[opened] || opened);
-      const from = esc(opened).length;
-      const at = rest.indexOf(closer, from);
-      const cls = opened === '/*' || opened === '<!--' ? 'tok-com' : 'tok-str';
-      if (at === -1) {
-        if (state) state.open = opened;
-        out += '<span class="' + cls + '">' + rest + '</span>';
-        break;
-      }
-      const chunk = rest.slice(0, at + closer.length);
-      out += '<span class="' + cls + '">' + chunk + '</span>';
-      i += chunk.length;
-      continue;
-    }
-
-    if (comment && rest.startsWith(esc(comment))) {
-      out += '<span class="tok-com">' + rest + '</span>';
-      break;
-    }
-    const quote = rest.match(/^(&quot;|&#39;|`)/);
-    if (quote) {
-      const mark = quote[1];
-      let end = mark.length;
-      while (end < rest.length) {
-        if (rest.slice(end).startsWith('\\')) { end += 2; continue; }
-        if (rest.slice(end).startsWith(mark)) { end += mark.length; break; }
-        end += 1;
-      }
-      out += '<span class="tok-str">' + rest.slice(0, end) + '</span>';
-      i += end;
-      continue;
-    }
-
-    const number = rest.match(/^\b\d[\d_]*(\.\d+)?([eE][+-]?\d+)?\b|^0[xXbBoO][0-9a-fA-F_]+/);
-    if (number) {
-      out += '<span class="tok-num">' + number[0] + '</span>';
-      i += number[0].length;
-      continue;
-    }
-
-    const word = rest.match(/^[A-Za-z_$][A-Za-z0-9_$]*/);
-    if (word) {
-      const text = word[0];
-      const after = rest.slice(text.length).match(/^\s*\(/);
-      let cls = '';
-      if (keywords && keywords.has(text)) cls = 'tok-key';
-      else if (after) cls = 'tok-fn';
-      else if (/^[A-Z][A-Za-z0-9_]*$/.test(text)) cls = 'tok-type';
-      out += cls ? '<span class="' + cls + '">' + text + '</span>' : text;
-      i += text.length;
-      continue;
-    }
-
-    const punctuation = rest.match(/^[{}()[\];:,.+\-*/%=!|^~?@]+/);
-    if (punctuation) {
-      out += '<span class="tok-punc">' + punctuation[0] + '</span>';
-      i += punctuation[0].length;
-      continue;
-    }
-
-    out += rest[0];
-    i += 1;
-  }
-  return out;
-}
-
-/* =============================================================================
-   The code section
-
-   Open files live as tabs, each keeping its own scroll position. Rendering is
-   row-per-line so the gutter can be sticky and unselectable — copying a file
-   should give you the file, not the line numbers.
-   ============================================================================= */
-const Code = {
-  files: new Map(),      // path -> {name, language, content, lines, scroll}
-  current: null,
-
-  init() {
-    $('btn-code-copy').onclick = () => this.copy();
-    $('btn-code-ask').onclick = () => this.ask();
-    const wrap = $('btn-code-wrap');
-    try { this.wrapped = localStorage.getItem('jarvis.wrap') === '1'; } catch (err) { this.wrapped = false; }
-    this.applyWrap();
-    wrap.onclick = () => {
-      this.wrapped = !this.wrapped;
-      try { localStorage.setItem('jarvis.wrap', this.wrapped ? '1' : '0'); } catch (err) { /* private mode */ }
-      this.applyWrap();
-    };
-  },
-
-  applyWrap() {
-    $('code-host').classList.toggle('wrapped', this.wrapped);
-    $('btn-code-wrap').classList.toggle('on', this.wrapped);
-  },
-
-  async open(path, options) {
-    Rail.show('code');
-    if (this.files.has(path)) return this.select(path);
-
-    let data;
-    try {
-      data = await api('/api/file?path=' + encodeURIComponent(path));
-    } catch (err) {
-      toast('That file would not open.');
-      return;
-    }
-    if (!data || data.error) { toast((data && data.error) || 'That file would not open.'); return; }
-    if (data.binary) { toast(data.name + ' is a binary file.'); return; }
-
-    this.files.set(path, {
-      path: data.path, name: data.name, language: data.language,
-      content: data.content, lines: data.lines, truncated: data.truncated,
-      size: data.size, scroll: 0,
-    });
-    this.select(path);
-    if (options && options.quiet !== true) Rail.mark('code');
-  },
-
-  select(path) {
-    const file = this.files.get(path);
-    if (!file) return;
-    if (this.current && this.files.has(this.current)) {
-      this.files.get(this.current).scroll = $('code-scroll').scrollTop;
-    }
-    this.current = path;
-    this.renderTabs();
-    this.renderCrumbs(file);
-    this.renderBody(file);
-    $('sb-file').textContent = file.name + ' · ' + file.lines + ' lines';
-    $('artifact-count').textContent = String(this.files.size);
-  },
-
-  close(path) {
-    this.files.delete(path);
-    if (this.current === path) {
-      this.current = null;
-      const next = this.files.keys().next();
-      if (next.done) this.blank(); else this.select(next.value);
-    } else {
-      this.renderTabs();
-    }
-  },
-
-  blank() {
-    $('artifact-count').textContent = String(this.files.size);
-    $('code-empty').hidden = false;
-    $('code-scroll').hidden = true;
-    $('code-foot').hidden = true;
-    $('crumbs').innerHTML = '';
-    $('sb-file').textContent = '';
-    this.renderTabs();
-  },
-
-  renderTabs() {
-    const strip = $('tabstrip');
-    strip.innerHTML = '';
-    this.files.forEach((file, path) => {
-      const tab = el('button', 'ftab' + (path === this.current ? ' on' : ''));
-      tab.type = 'button';
-      tab.title = path;
-      tab.append(el('span', 'fname', file.name));
-      const close = el('span', 'close', '×');
-      close.onclick = (event) => { event.stopPropagation(); this.close(path); };
-      tab.append(close);
-      tab.onclick = () => this.select(path);
-      strip.appendChild(tab);
-    });
-  },
-
-  renderCrumbs(file) {
-    const crumbs = $('crumbs');
-    crumbs.innerHTML = '';
-    const parts = String(file.path || file.name).split('/');
-    crumbs.appendChild(el('span', '', BOOT.workspaceName || 'workspace'));
-    parts.forEach((part, i) => {
-      crumbs.appendChild(el('span', 'sep', '/'));
-      crumbs.appendChild(el('span', i === parts.length - 1 ? 'leaf' : '', part));
-    });
-  },
-
-  renderBody(file) {
-    $('code-empty').hidden = true;
-    $('code-scroll').hidden = false;
-    $('code-foot').hidden = false;
-
-    const body = $('code-body');
-    body.innerHTML = '';
-    const lines = file.content.split('\n');
-    // A document fragment keeps a four-thousand-line file to one reflow.
-    const batch = document.createDocumentFragment();
-    const state = { open: null };   // carries an unclosed docstring down the file
-    lines.forEach((line, i) => {
-      const row = document.createElement('tr');
-      const gutter = document.createElement('td');
-      gutter.className = 'ln';
-      // The number is drawn by CSS from this attribute rather than being a text
-      // node. `user-select: none` stops a drag from highlighting it, but it does
-      // not keep it out of a selection that spans the row — generated content
-      // does, so copying a block of code can never come back numbered.
-      gutter.dataset.line = String(i + 1);
-      const src = document.createElement('td');
-      src.className = 'src';
-      src.innerHTML = highlight(line, file.language, state) || '&nbsp;';
-      row.append(gutter, src);
-      batch.appendChild(row);
-    });
-    body.appendChild(batch);
-
-    $('code-meta').textContent =
-      file.language + ' · ' + file.lines + ' lines · ' + bytes(file.size) +
-      (file.truncated ? ' · truncated' : '');
-    $('code-scroll').scrollTop = file.scroll || 0;
-  },
-
-  async copy() {
-    const file = this.files.get(this.current);
-    if (!file) return;
-    try {
-      await navigator.clipboard.writeText(file.content);
-      toast('Copied ' + file.name + '.');
-    } catch (err) { toast('The clipboard refused that.'); }
-  },
-
-  ask() {
-    const file = this.files.get(this.current);
-    if (!file) return;
-    Composer.input.value = 'About `' + file.path + '`: ';
-    Composer.input.focus();
-    Composer.autosize();
-  },
-};
 
 /* =============================================================================
    The agentic terminal, inside the app
@@ -2120,12 +1798,25 @@ const Term = {
    Chrome
    ============================================================================= */
 function toast(text) {
+  const host = $('toasts');
+  // The same notice twice in a row is one notice. Repeating it just restarts
+  // the clock on the one already showing.
+  const last = host.lastElementChild;
+  if (last && last.textContent === text && !last.classList.contains('leaving')) {
+    clearTimeout(Number(last.dataset.timer));
+    last.dataset.timer = String(setTimeout(() => fade(last), 2600));
+    return;
+  }
   const node = el('div', 'toast', text);
-  $('toasts').appendChild(node);
-  setTimeout(() => {
-    node.classList.add('leaving');
-    setTimeout(() => node.remove(), 220);
-  }, 2600);
+  host.appendChild(node);
+  // Three at once is already more than anyone reads.
+  while (host.children.length > 3) host.removeChild(host.firstChild);
+  node.dataset.timer = String(setTimeout(() => fade(node), 2600));
+
+  function fade(target) {
+    target.classList.add('leaving');
+    setTimeout(() => target.remove(), 220);
+  }
 }
 
 /* =============================================================================
@@ -2237,23 +1928,44 @@ const Sessions = {
    The keyboard sheet
    ============================================================================= */
 const KEYMAP = [
+  ['Everywhere', [
+    ['Command palette', ['Ctrl', 'K']],
+    ['Chat \u2194 Code', ['Ctrl', 'Shift', 'C']],
+    ['Appearance', ['Ctrl', ',']],
+    ['Interrupt the turn', ['Ctrl', '.']],
+    ['Close what is open', ['Esc']],
+    ['This sheet', ['?']],
+  ]],
   ['Conversation', [
     ['Send', ['Enter']],
     ['Newline', ['Shift', 'Enter']],
     ['Command completion', ['/']],
-    ['Interrupt the turn', ['Esc']],
     ['New session', ['Ctrl', 'N']],
-  ]],
-  ['Panels', [
-    ['Command palette', ['Ctrl', 'K']],
-    ['Appearance', ['Ctrl', '/']],
     ['Right panel', ['Ctrl', 'B']],
     ['Sidebar', ['Ctrl', '\\']],
-    ['Code · Terminal · Agent · Logs · System', ['Ctrl', '1–5']],
-    ['This sheet', ['?']],
+    ['Terminal \u00b7 Agent \u00b7 Logs \u00b7 System', ['Ctrl', '1\u20134']],
   ]],
-  ['Code', [
-    ['Close the open file', ['Ctrl', 'W']],
+  ['Code \u00b7 getting around', [
+    ['Open a file by name', ['Ctrl', 'P']],
+    ['Search the workspace', ['Ctrl', 'Shift', 'F']],
+    ['Explorer \u00b7 Outline \u00b7 Problems \u00b7 Agent', ['Ctrl', 'Shift', 'E/O/M/A']],
+    ['Side panel', ['Ctrl', 'B']],
+    ['Mission panel', ['Ctrl', 'Shift', 'B']],
+    ['Bottom dock', ['Ctrl', 'J']],
+    ['Terminal', ['Ctrl', '`']],
+    ['Close the file', ['Alt', 'W']],
+  ]],
+  ['Code \u00b7 editing', [
+    ['Save', ['Ctrl', 'S']],
+    ['Find', ['Ctrl', 'F']],
+    ['Replace', ['Ctrl', 'H']],
+    ['Go to line', ['Ctrl', 'G']],
+    ['Toggle comment', ['Ctrl', '/']],
+    ['Duplicate', ['Ctrl', 'D']],
+    ['Delete the line', ['Ctrl', 'Shift', 'K']],
+    ['Move the line', ['Alt', '\u2191', '\u2193']],
+    ['Indent \u00b7 outdent', ['Tab', 'Shift', 'Tab']],
+    ['Soft wrap', ['Alt', 'Z']],
   ]],
   ['Terminal', [
     ['Run', ['Enter']],
@@ -2330,9 +2042,17 @@ function boot() {
   ]);
   facts('machine-facts', [['Workspace', BOOT.workspaceName || '—']]);
 
+  // A suggestion lands in the composer with the caret after it. Firing it on
+  // the click gave you no chance to change a word first, which made the whole
+  // row something to avoid rather than something to use.
   SUGGESTIONS.forEach((text) => {
     const button = el('button', 'suggestion', text);
-    button.onclick = () => Composer.send(text);
+    button.onclick = () => {
+      Composer.input.value = text;
+      Composer.autosize();
+      Composer.input.focus();
+      Composer.input.setSelectionRange(text.length, text.length);
+    };
     $('suggestions').appendChild(button);
   });
 
@@ -2342,7 +2062,6 @@ function boot() {
   Composer.init();
   Palette.init();
   Studio.init();
-  Code.init();
   Term.init();
   Logs.init();
   Sh.init();
@@ -2357,38 +2076,85 @@ function boot() {
   $('btn-rail').onclick = () => Shell.toggle('rail');
   $('btn-sidebar').onclick = () => Shell.toggle('sidebar');
   $('scrim').onclick = () => Studio.hide();
-  $('btn-attach').onclick = () => { Rail.show('code'); Shell.open('sidebar'); };
+  // "+" means "bring a file into this conversation", so it opens the file
+  // picker. It used to throw two panes open instead, which is not a thing
+  // anybody pressed it hoping for.
+  $('btn-attach').onclick = () => { Ide.surface('code'); setTimeout(() => Ide.quick.show(), 60); };
   $('model-chip').onclick = () => { Rail.show('system'); };
   $('btn-mic').onclick = () => Composer.send('talk');
   $('btn-mute').onclick = () => Composer.send('quiet');
-  $('btn-mute-all').onclick = () => Composer.send('quiet');
   document.querySelectorAll('.nav-item[data-rail]').forEach((item) => {
     item.onclick = () => Rail.show(item.dataset.rail);
   });
+  $('btn-goto-code').onclick = () => Ide.surface('code');
 
+  /* The conversation's keyboard map.
+
+     Four things here were changed because living with them was worse than
+     living without them:
+
+       · Ctrl+/ used to open the appearance panel. Ctrl+/ toggles a comment in
+         every editor ever written, and the Code surface needs it for that, so
+         appearance moved to Ctrl+, — which is where settings live anyway.
+
+       · Ctrl+W used to close a file. In a browser and in most desktop webviews
+         Ctrl+W closes the window, taking the session with it. Nothing is worth
+         that; closing a tab is Alt+W on the Code surface.
+
+       · Escape used to interrupt a running turn when no panel was open. An
+         Escape is a reflex — you press it to dismiss things — and having a
+         reflex kill work in progress is indefensible. Interrupting is Ctrl+.
+         and the Stop button, both of which you have to mean.
+
+       · Any printable key used to pull focus into the composer. It also ate
+         that key, because the keypress had already been delivered somewhere
+         else: typing "hello" into the page gave you "ello". It now inserts the
+         character it captured, and only when nothing else could want it.       */
   document.addEventListener('keydown', (event) => {
     const meta = event.ctrlKey || event.metaKey;
-    const typing = !!event.target.closest('input, textarea');
+    const typing = !!(event.target.closest && event.target.closest('input, textarea, [contenteditable]'));
+    const overlay = Keys.open || !$('palette-wrap').hidden || Studio.open ||
+                    !$('quick-wrap').hidden;
 
-    if (meta && event.key.toLowerCase() === 'k') { event.preventDefault(); Palette.show(); }
-    else if (meta && event.key === '/') { event.preventDefault(); Studio.toggle(); }
-    else if (meta && event.key.toLowerCase() === 'b') { event.preventDefault(); Shell.toggle('rail'); }
-    else if (meta && event.key === '\\') { event.preventDefault(); Shell.toggle('sidebar'); }
-    else if (meta && event.key.toLowerCase() === 'n') { event.preventDefault(); Sessions.create(); }
-    else if (meta && event.key >= '1' && event.key <= '5') {
-      event.preventDefault();
-      Rail.show(VIEWS[Number(event.key) - 1]);
-    } else if (meta && event.key.toLowerCase() === 'w' && Rail.view === 'code' && Code.current) {
-      event.preventDefault(); Code.close(Code.current);
-    } else if (event.key === '?' && !typing) {
-      event.preventDefault(); Keys.show();
-    } else if (event.key === 'Escape') {
+    if (event.key === 'Escape') {
       if (Keys.open) Keys.hide();
       else if (!$('palette-wrap').hidden) Palette.hide();
       else if (Studio.open) Studio.hide();
-      else if (state.busy) { api('/api/interrupt', {}).catch(() => {}); toast('Interrupted.'); }
-    } else if (!typing && event.key.length === 1) {
-      Composer.input.focus();     // start typing anywhere, land in the composer
+      return;
+    }
+    if (meta && event.key === ',') { event.preventDefault(); Studio.toggle(); return; }
+    if (meta && event.key === '.') {
+      event.preventDefault();
+      if (state.busy) { api('/api/interrupt', {}).catch(() => {}); toast('Interrupted.'); }
+      return;
+    }
+    // `!shiftKey` matters: Ctrl+Shift+K deletes a line in the editor, and without
+    // this the palette opened on top of it every time.
+    if (meta && !event.shiftKey && event.key.toLowerCase() === 'k') {
+      event.preventDefault(); Palette.show(); return;
+    }
+
+    // Everything below belongs to the conversation. The Code surface has its
+    // own map and registers it separately.
+    if (document.body.dataset.surface === 'code') return;
+
+    if (meta && event.key.toLowerCase() === 'b' && !event.shiftKey) {
+      event.preventDefault(); Shell.toggle('rail'); return;
+    }
+    if (meta && event.key === '\\') { event.preventDefault(); Shell.toggle('sidebar'); return; }
+    if (meta && event.key.toLowerCase() === 'n') { event.preventDefault(); Sessions.create(); return; }
+    if (meta && event.key >= '1' && event.key <= String(VIEWS.length)) {
+      event.preventDefault(); Rail.show(VIEWS[Number(event.key) - 1]); return;
+    }
+    if (event.key === '?' && !typing && !overlay) { event.preventDefault(); Keys.show(); return; }
+
+    // Start typing anywhere and land in the composer — with the character you
+    // typed, which is the whole point and what the old version dropped.
+    if (!typing && !overlay && !meta && !event.altKey && event.key.length === 1) {
+      event.preventDefault();
+      Composer.input.focus();
+      Composer.input.value += event.key;
+      Composer.autosize();
     }
   });
 
