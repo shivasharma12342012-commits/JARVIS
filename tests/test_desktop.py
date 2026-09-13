@@ -962,6 +962,197 @@ def test_the_page_pulls_in_every_script_and_stylesheet(app):
     is a file the browser never fetches, however present it is on disk."""
     page = _request(app, "/").read().decode("utf-8")
     for name in desktop_mod.FRONT_END_FILES:
-        if name == "index.html":
+        # The two .html files are pages in their own right, not subresources of
+        # each other: index.html is this one, and signin.html replaces it.
+        if name.endswith(".html"):
             continue
         assert f"/static/{name}?token=" in page, name
+
+
+# ══ the lock on the front door ═══════════════════════════════════════════════════════
+# The loopback bind and the session token answer "can something on the network
+# reach this?". These answer "is this the person who started it?" — and, just as
+# importantly, that switching the lock on does not switch anything else off.
+@pytest.fixture
+def locked(app, tmp_path, monkeypatch):
+    """The same app, with a password set and the lock switched on."""
+    from config import settings
+
+    from jarvis import auth
+
+    monkeypatch.setattr(auth, "CREDENTIALS_PATH", tmp_path / "credentials.json")
+    monkeypatch.setattr(auth, "SCRYPT_N", 2 ** 10)
+    monkeypatch.setattr(auth, "SCRYPT_MAXMEM", 128 * (2 ** 10) * 8 * 2)
+    monkeypatch.setattr(settings, "DESKTOP_AUTH_MODE", "password", raising=False)
+    auth.set_password("let me in please")
+    app.sessions = auth.Sessions()
+    app.throttle = auth.Throttle()
+    return app
+
+
+def _raw(app, path, body=None, token=True, cookie=None, headers=None):
+    """A request with full control over what it carries. Returns (status, body, headers)."""
+    base = app.url.split("?")[0].rstrip("/")
+    data = None if body is None else json.dumps(body).encode("utf-8")
+    request = urllib.request.Request(base + path, data=data,
+                                     method="GET" if data is None else "POST")
+    request.add_header("Content-Type", "application/json")
+    if token:
+        request.add_header("X-Jarvis-Token", app.token)
+    if cookie:
+        request.add_header("Cookie", cookie)
+    for name, value in (headers or {}).items():
+        request.add_header(name, value)
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return response.status, response.read().decode("utf-8", "replace"), response.headers
+    except urllib.error.HTTPError as error:
+        return error.code, error.read().decode("utf-8", "replace"), error.headers
+
+
+def _sign_in(app, password="let me in please"):
+    """Sign in and return the cookie header a browser would then send."""
+    _, _, headers = _raw(app, "/api/auth/password", {"password": password}, token=False)
+    return (headers.get("Set-Cookie") or "").split(";")[0]
+
+
+def test_with_the_lock_off_nothing_changes(app):
+    """The default. Every existing route answers exactly as it always did."""
+    assert get_json(app, "/api/state")["token"] == app.token
+    assert _raw(app, "/")[0] == 200
+    assert "__JARVIS_BOOT__" not in _raw(app, "/")[1]
+
+
+def test_the_locked_window_serves_a_lock_screen_instead_of_itself(locked):
+    status, page, _ = _raw(locked, "/")
+    assert status == 200
+    assert "This window is locked" in page
+    # The token lives in the page; a browser that has not signed in must not get
+    # a page, because getting the page *is* getting the token.
+    assert locked.token not in page
+    assert "__JARVIS_TOKEN__" not in page
+
+
+@pytest.mark.parametrize("route", ["/api/state", "/api/files?path=", "/api/index", "/api/events"])
+def test_a_valid_token_alone_opens_nothing(locked, route):
+    assert _raw(locked, route)[0] == 401
+
+
+def test_the_shell_is_behind_the_lock_too(locked):
+    status, _, _ = _raw(locked, "/api/shell", {"input": "echo should not run"})
+    assert status == 401
+
+
+def test_the_sign_in_state_is_readable_without_signing_in(locked):
+    status, body, _ = _raw(locked, "/api/auth/state", token=False)
+    payload = json.loads(body)
+    assert status == 200
+    assert payload["required"] is True and payload["signedIn"] is False
+    assert payload["password"] is True and payload["passwordSet"] is True
+
+
+def test_the_right_password_opens_the_door(locked):
+    status, body, headers = _raw(locked, "/api/auth/password",
+                                 {"password": "let me in please"}, token=False)
+    assert status == 200 and json.loads(body)["ok"] is True
+    cookie = headers.get("Set-Cookie") or ""
+    assert "jarvis_session=" in cookie
+    # Unreadable by script, and never sent by another site.
+    assert "HttpOnly" in cookie and "SameSite=Strict" in cookie
+
+
+def test_the_wrong_password_does_not(locked):
+    status, body, headers = _raw(locked, "/api/auth/password",
+                                 {"password": "not the password"}, token=False)
+    assert json.loads(body)["ok"] is False
+    assert "Set-Cookie" not in headers
+
+
+def test_both_the_cookie_and_the_token_are_required(locked):
+    cookie = _sign_in(locked)
+    assert _raw(locked, "/api/state", cookie=cookie)[0] == 200
+    assert _raw(locked, "/api/state", cookie=cookie, token=False)[0] == 403
+    assert _raw(locked, "/api/state", cookie="jarvis_session=invented")[0] == 401
+
+
+def test_signing_out_puts_the_lock_back(locked):
+    cookie = _sign_in(locked)
+    assert _raw(locked, "/api/auth/logout", {}, cookie=cookie)[0] == 200
+    assert _raw(locked, "/api/state", cookie=cookie)[0] == 401
+    assert "This window is locked" in _raw(locked, "/", cookie=cookie)[1]
+
+
+def test_the_host_and_origin_checks_still_apply_when_signed_in(locked):
+    """The lock is a third layer, not a replacement for the two under it."""
+    cookie = _sign_in(locked)
+    assert _raw(locked, "/api/state", cookie=cookie,
+                headers={"Host": "evil.example"})[0] == 403
+    assert _raw(locked, "/api/state", cookie=cookie,
+                headers={"Origin": "https://evil.example"})[0] == 403
+
+
+def test_the_lock_screen_is_refused_to_a_forged_host(locked):
+    assert _raw(locked, "/", token=False, headers={"Host": "evil.example"})[0] == 403
+
+
+def test_too_many_wrong_guesses_closes_the_door(locked):
+    from jarvis import auth
+
+    locked.throttle = auth.Throttle(limit=3, window=30.0)
+    for _ in range(3):
+        _raw(locked, "/api/auth/password", {"password": "wrong"}, token=False)
+    _, body, _ = _raw(locked, "/api/auth/password", {"password": "let me in please"}, token=False)
+    result = json.loads(body)
+    assert result["ok"] is False and "too many attempts" in result["error"]
+
+
+def test_google_start_is_refused_when_google_is_switched_off(locked):
+    status, body, _ = _raw(locked, "/api/auth/google/start", token=False)
+    assert status == 400 and "switched off" in json.loads(body)["error"]
+
+
+def test_google_start_redirects_to_google_when_it_is_configured(locked, monkeypatch):
+    from config import settings
+
+    monkeypatch.setattr(settings, "DESKTOP_AUTH_MODE", "any", raising=False)
+    monkeypatch.setattr(settings, "GOOGLE_CLIENT_ID", "abc.apps.googleusercontent.com",
+                        raising=False)
+    base = locked.url.split("?")[0].rstrip("/")
+    request = urllib.request.Request(base + "/api/auth/google/start")
+
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs):
+            return None
+
+    opener = urllib.request.build_opener(NoRedirect)
+    try:
+        with opener.open(request, timeout=5) as response:
+            pytest.fail(f"expected a redirect, got {response.status}")
+    except urllib.error.HTTPError as error:
+        assert error.code == 302
+        target = error.headers["Location"]
+    assert target.startswith("https://accounts.google.com/o/oauth2/v2/auth?")
+    assert "code_challenge_method=S256" in target
+    assert "code_verifier" not in target
+
+
+def test_a_google_callback_that_did_not_start_here_lands_back_on_the_lock_screen(locked, monkeypatch):
+    from config import settings
+
+    monkeypatch.setattr(settings, "DESKTOP_AUTH_MODE", "any", raising=False)
+    monkeypatch.setattr(settings, "GOOGLE_CLIENT_ID", "abc.apps.googleusercontent.com",
+                        raising=False)
+    status, page, _ = _raw(locked, "/api/auth/google/callback?code=x&state=invented", token=False)
+    assert status == 200
+    assert "This window is locked" in page
+    assert locked.token not in page
+
+
+def test_the_boot_payload_says_who_signed_in(locked):
+    cookie = _sign_in(locked)
+    page = _raw(locked, "/", cookie=cookie)[1]
+    assert "This window is locked" not in page
+    boot = json.loads(page.split("window.JARVIS_BOOT = ", 1)[1].split(";</script>", 1)[0])
+    assert boot["auth"]["required"] is True
+    assert boot["identity"]["method"] == "password"
+    assert boot["token"] == locked.token

@@ -429,12 +429,18 @@ kbd, .hint {
   border: 1px solid var(--line); background: var(--bg-deep); overflow: hidden;
 }
 .codeblock-head {
-  display: flex; align-items: center; justify-content: space-between;
+  display: flex; align-items: center; gap: 6px;
   padding: 5px 6px 5px 11px; background: var(--surface);
   border-bottom: 1px solid var(--line);
   font-family: var(--font-mono); font-size: 9.5px; color: var(--text-faint);
   letter-spacing: .08em; text-transform: uppercase;
 }
+/* The language label takes whatever is left; the buttons never shrink. In a
+   narrow panel a shrinking button collapses to one character wide and prints
+   its label vertically, one letter per line. */
+.codeblock-head > :first-child { flex: 1; min-width: 0; overflow: hidden;
+                                 text-overflow: ellipsis; white-space: nowrap; }
+.codeblock-head button { flex: none; white-space: nowrap; }
 .codeblock pre { margin: 0; padding: 11px 13px; overflow-x: auto; }
 .msg .body .codeblock code, .codeblock code {
   background: none; padding: 0; color: var(--text);

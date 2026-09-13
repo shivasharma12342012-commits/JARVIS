@@ -8,6 +8,9 @@ logs/
 .jarvis_profile.json
 .jarvis_theme.json
 .jarvis_voiceprint.json
+# The sign-in credential: a scrypt hash, but still this machine's and not
+# the project's. Nothing here ever contains a password in the clear.
+.jarvis_credentials.json
 .env
 
 # Environments and test caches.

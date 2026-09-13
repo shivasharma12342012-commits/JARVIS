@@ -64,6 +64,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 from urllib.parse import parse_qs, urlparse
 
+from jarvis import auth
 from config import (
     STATE_IDLE,
     STATE_LISTENING,
@@ -603,6 +604,18 @@ def language_for(path: Path, text: str = "") -> str:
         return by_suffix
     return _shebang_language(text) if text else "text"
 
+
+#: The cookie a signed-in browser carries. Only meaningful when the lock is on.
+SESSION_COOKIE = "jarvis_session"
+
+#: Routes reachable before signing in. Everything else needs a session first.
+#: They still require the Host and Origin checks \u2014 what they skip is the session
+#: token, which a browser that has not been given the page cannot possibly have.
+PUBLIC_ROUTES = frozenset({
+    "/", "/index.html", "/signin",
+    "/api/auth/state", "/api/auth/password", "/api/auth/google/start",
+    "/api/auth/google/callback",
+})
 
 #: How many paths the fuzzy opener is given. A ceiling, not a target.
 MAX_INDEX_FILES = 6_000
@@ -1211,8 +1224,8 @@ class _Handler(BaseHTTPRequestHandler):
         """Keep the request log in the log file, out of the operator's terminal."""
         LOG.debug("%s - %s", self.address_string(), fmt % args)
 
-    def _authorised(self) -> bool:
-        """Reject anything that is not this machine holding this session's token.
+    def _local(self) -> bool:
+        """Whether this request is this machine talking to itself.
 
         The ``Host`` check is the part that matters. Without it, any web page
         the operator visits could point a hostname it controls at 127.0.0.1 and
@@ -1227,13 +1240,61 @@ class _Handler(BaseHTTPRequestHandler):
         if origin and urlparse(origin).hostname not in _LOCAL_HOSTS:
             LOG.warning("Rejected a cross-origin request from %s", origin)
             return False
+        return True
+
+    def _authorised(self) -> bool:
+        """Reject anything that is not this machine holding this session's token."""
+        if not self._local():
+            return False
         supplied = self.headers.get("X-Jarvis-Token") or _query(self.path).get("token", [""])[0]
         return secrets.compare_digest(str(supplied), self.app.token)
+
+    # -- the lock on the front door -----------------------------------------------------
+    def _cookie(self, name: str) -> str:
+        """One cookie by name. Parsed by hand; the header is a short, flat list."""
+        raw = self.headers.get("Cookie") or ""
+        for part in raw.split(";"):
+            key, _, value = part.strip().partition("=")
+            if key == name:
+                return value.strip()
+        return ""
+
+    def _identity(self) -> Any:
+        """Who is making this request, or ``None`` when nobody has signed in.
+
+        With the lock off this is a standing "the operator", so every route
+        downstream can ask the same question and get a usable answer either way.
+        """
+        if not auth.required():
+            return auth.OPEN
+        return self.app.sessions.resolve(self._cookie(SESSION_COOKIE))
+
+    def _grant(self, identity: Any) -> None:
+        """Hand the browser a session cookie for a successful sign-in.
+
+        ``HttpOnly`` so no script on the page can read it, ``SameSite=Strict``
+        so no other site can cause the browser to send it. Not ``Secure``: this
+        is plain http on 127.0.0.1 and a Secure cookie would simply be dropped.
+        """
+        token = self.app.sessions.mint(identity)
+        self._cookie_header = (
+            f"{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict; "
+            f"Max-Age={int(self.app.sessions.ttl)}"
+        )
+
+    def _clear_cookie(self) -> None:
+        self._cookie_header = f"{SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"
+
+    #: Set by a sign-in or a sign-out, sent on whatever response follows.
+    _cookie_header: str | None = None
 
     def _send(self, code: int, body: bytes, content_type: str, extra: dict[str, str] | None = None) -> None:
         self.send_response(code)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        if self._cookie_header:
+            self.send_header("Set-Cookie", self._cookie_header)
+            self._cookie_header = None
         # Nothing here should ever be cached: the token is in the URL and the
         # state changes constantly.
         self.send_header("Cache-Control", "no-store")
@@ -1266,13 +1327,18 @@ class _Handler(BaseHTTPRequestHandler):
     # -- routes -------------------------------------------------------------------------
     def do_GET(self) -> None:  # noqa: N802 - base class name
         route = urlparse(self.path).path
-        if not self._authorised():
-            self._json({"error": "not authorised"}, 403)
+        if not self._gate(route):
             return
         self.app.touch()
 
         if route in ("/", "/index.html"):
             self._page()
+        elif route == "/api/auth/state":
+            self._json(self._auth_state())
+        elif route == "/api/auth/google/start":
+            self._google_start()
+        elif route == "/api/auth/google/callback":
+            self._google_callback()
         elif route.startswith("/static/"):
             self._static(route[len("/static/"):])
         elif route == "/api/state":
@@ -1298,13 +1364,18 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802 - base class name
         route = urlparse(self.path).path
-        if not self._authorised():
-            self._json({"error": "not authorised"}, 403)
+        if not self._gate(route):
             return
         self.app.touch()
         body = self._body()
 
-        if route == "/api/chat":
+        if route == "/api/auth/password":
+            self._json(self._password_signin(body))
+        elif route == "/api/auth/logout":
+            self.app.sessions.revoke(self._cookie(SESSION_COOKIE))
+            self._clear_cookie()
+            self._json({"ok": True})
+        elif route == "/api/chat":
             text = str(body.get("text") or "").strip()
             if not text:
                 self._json({"error": "nothing to send"}, 400)
@@ -1334,6 +1405,102 @@ class _Handler(BaseHTTPRequestHandler):
             self.app.request_stop()
         else:
             self._json({"error": "no such route"}, 404)
+
+    # -- signing in ---------------------------------------------------------------------
+    def _gate(self, route: str) -> bool:
+        """Decide whether this request gets to run at all.
+
+        Three questions, in order, and the order matters. Is this machine
+        talking to itself? Then, for anything but the handful of routes a
+        not-yet-signed-in browser legitimately needs: has somebody signed in?
+        And last, the session token, which is the check that was already here.
+        """
+        if not self._local():
+            self._json({"error": "not authorised"}, 403)
+            return False
+
+        public = route in PUBLIC_ROUTES or route.startswith("/static/signin")
+        if auth.required() and not public and self._identity() is None:
+            self._json({"error": "not signed in"}, 401)
+            return False
+
+        # The page itself carries no token \u2014 it is what hands the token out \u2014
+        # so it is checked on the session instead, which the gate above did.
+        if route in ("/", "/index.html") or route.startswith("/api/auth/"):
+            return True
+
+        supplied = self.headers.get("X-Jarvis-Token") or _query(self.path).get("token", [""])[0]
+        if not secrets.compare_digest(str(supplied), self.app.token):
+            self._json({"error": "not authorised"}, 403)
+            return False
+        return True
+
+    def _auth_state(self) -> dict[str, Any]:
+        """What the sign-in page and the signed-in window both ask."""
+        identity = self._identity()
+        payload = dict(auth.describe())
+        payload["signedIn"] = identity is not None
+        payload["identity"] = identity.to_dict() if identity is not None else None
+        wait = self.app.throttle.locked_for()
+        payload["lockedFor"] = round(wait, 1)
+        return payload
+
+    def _password_signin(self, body: dict[str, Any]) -> dict[str, Any]:
+        if not auth.required():
+            return {"ok": True, "identity": auth.OPEN.to_dict()}
+        if auth.mode() not in ("password", "any"):
+            return {"ok": False, "error": "password sign-in is switched off"}
+
+        wait = self.app.throttle.locked_for()
+        if wait > 0:
+            return {"ok": False, "error": f"too many attempts; try again in {int(wait) + 1}s",
+                    "lockedFor": round(wait, 1)}
+        if not auth.has_password():
+            return {"ok": False, "error": "no password has been set; run `python main.py set-password`"}
+
+        if not auth.verify_password(str(body.get("password") or "")):
+            self.app.throttle.fail()
+            LOG.warning("a password sign-in was refused")
+            return {"ok": False, "error": "that is not the password"}
+
+        self.app.throttle.succeed()
+        identity = auth.Identity(method="password", subject="operator",
+                                 name=str(settings.USER_NAME or "") or "Operator")
+        self._grant(identity)
+        return {"ok": True, "identity": identity.to_dict()}
+
+    def _redirect_uri(self) -> str:
+        """Where Google sends the browser back to. Loopback, on this very port."""
+        return f"http://127.0.0.1:{self.server.server_address[1]}/api/auth/google/callback"
+
+    def _google_start(self) -> None:
+        if auth.mode() not in ("google", "any"):
+            self._json({"error": "Google sign-in is switched off"}, 400)
+            return
+        if not self.app.google.configured:
+            self._json({"error": "no GOOGLE_CLIENT_ID is set"}, 400)
+            return
+        target = self.app.google.start(self._redirect_uri())
+        self.send_response(302)
+        self.send_header("Location", target)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _google_callback(self) -> None:
+        """Google hands the browser back here with a code, or with a refusal."""
+        query = _query(self.path)
+        if query.get("error"):
+            self._signin_page(error="Google refused that sign-in: " + query["error"][0])
+            return
+        identity, why = self.app.google.finish(
+            query.get("code", [""])[0], query.get("state", [""])[0], self._redirect_uri())
+        if identity is None:
+            self._signin_page(error=why or "that sign-in did not complete")
+            return
+        self._grant(identity)
+        # Straight to the application, rather than back to a page that would
+        # only tell them to click through to it.
+        self._page()
 
     def _shell_action(self, body: dict[str, Any]) -> dict[str, Any]:
         """Run one line in the system shell, or steer it."""
@@ -1366,17 +1533,43 @@ class _Handler(BaseHTTPRequestHandler):
         token, and the first paint already has the operator's colours — no
         flash of the wrong theme while a stylesheet loads.
         """
+        # Not signed in? Then this request does not get the token, because the
+        # token is baked into the page and the page is what hands it out. The
+        # lock screen is served instead, and it carries nothing.
+        if self._identity() is None:
+            self._signin_page()
+            return
         try:
             html = (WEB_ROOT / "index.html").read_text(encoding="utf-8")
         except OSError:
             self._send(500, b"The desktop front end is missing from this install.", "text/plain")
             return
-        html = html.replace("__JARVIS_BOOT__", json.dumps(self.app.state_payload()))
+        boot = self.app.state_payload()
+        identity = self._identity()
+        boot["identity"] = identity.to_dict() if identity is not None else None
+        html = html.replace("__JARVIS_BOOT__", json.dumps(boot))
         html = html.replace("__JARVIS_THEME_CSS__", self.app.theme.css())
         # The stylesheet and the script are subresources: the browser fetches
         # them itself, with no chance to attach a header, so the token has to
         # travel in their URLs or the page loads naked.
         html = html.replace("__JARVIS_TOKEN__", self.app.token)
+        self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
+
+    def _signin_page(self, error: str = "") -> None:
+        """The lock screen. It gets the theme and nothing else \u2014 no token, no
+        workspace, no model, nothing about the session behind it."""
+        try:
+            html = (WEB_ROOT / "signin.html").read_text(encoding="utf-8")
+        except OSError:
+            self._send(500, b"The sign-in page is missing from this install.", "text/plain")
+            return
+        html = html.replace("__JARVIS_THEME_CSS__", self.app.theme.css())
+        html = html.replace("__JARVIS_SIGNIN__", json.dumps(dict(
+            auth.describe(),
+            agent=settings.AGENT_NAME,
+            error=error,
+            lockedFor=round(self.app.throttle.locked_for(), 1),
+        )))
         self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
 
     def _static(self, name: str) -> None:
@@ -1582,6 +1775,13 @@ class DesktopApp:
         self.port = port
         self.theme = theme or theme_mod.load()
         self.token = secrets.token_urlsafe(24)
+        #: Who has signed in. In memory, so a restart signs everyone out — which
+        #: is what you want from a lock on a desktop application.
+        self.sessions = auth.Sessions()
+        #: The lockout after too many wrong passwords.
+        self.throttle = auth.Throttle()
+        #: The Google flow, holding at most one pending PKCE exchange.
+        self.google = auth.Google()
         self.open_window_on_start = open_window_on_start
         #: Standalone windows own the process, so closing the last one should
         #: end it. An attached window must not take the terminal down with it.
@@ -1765,6 +1965,7 @@ class DesktopApp:
             # The editor greys Ctrl+S out rather than offering a save that the
             # server would only refuse.
             "canEdit": bool(getattr(settings, "DESKTOP_EDIT_ENABLED", True)),
+            "auth": auth.describe(),
         }
         try:
             payload.update(self.backend.snapshot())
@@ -1822,7 +2023,7 @@ class DesktopApp:
 #: install fails at startup with the name of what is missing, instead of opening
 #: a window that silently has no editor in it.
 FRONT_END_FILES: tuple[str, ...] = (
-    "index.html", "app.css", "app.js", "ide.css", "ide.js", "lang.js",
+    "index.html", "signin.html", "app.css", "app.js", "ide.css", "ide.js", "lang.js",
 )
 
 

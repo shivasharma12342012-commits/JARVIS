@@ -356,3 +356,128 @@ def test_the_shell_runs_a_command_from_the_pane(window):
 def test_no_errors_accumulated_over_the_whole_run(window):
     page, app, errors = window
     assert errors == [], errors
+
+
+def test_a_collapsed_pane_paints_nothing_over_the_editor(window):
+    """It painted eighteen pixels of header on top of the tab strip.
+
+    Zeroing a grid track leaves the pane one border wide, and its header — which
+    has padding and two buttons that do not shrink — goes right on drawing next
+    door. Measured on what is actually painted, not on the layout box, since
+    `getBoundingClientRect` cheerfully ignores `overflow: hidden`.
+    """
+    page, app, errors = window
+    page.evaluate("Ide.surface('code'); Ide.open('jarvis/theme.py')")
+    page.wait_for_function("document.querySelectorAll('#lin .eline').length > 50", timeout=20000)
+
+    for side, mission in ((False, True), (True, False), (False, False), (True, True)):
+        page.evaluate("([s, m]) => { Ide.setSide(s); Ide.setMission(m); }", [side, mission])
+        page.wait_for_timeout(460)
+        assert page.evaluate(_PANES_DO_NOT_OVERLAP) == [], f"side={side} mission={mission}"
+
+    page.evaluate("Ide.setSide(true); Ide.setMission(true)")
+    page.wait_for_timeout(400)
+    page.evaluate("Ide.order.slice().forEach((p) => { "
+                  "const d = Ide.docs.get(p); d.saved = d.text; Ide.close(p); })")
+    page.evaluate("Ide.surface('chat')")
+    page.wait_for_timeout(300)
+
+
+_PANES_DO_NOT_OVERLAP = """
+() => {
+  const clipped = (el) => {
+    for (let n = el; n; n = n.parentElement) {
+      if (n.hidden) return null;
+      const s = getComputedStyle(n);
+      if (s.display === 'none' || s.visibility === 'hidden') return null;
+    }
+    const r = el.getBoundingClientRect();
+    let [top, left, right, bottom] = [r.top, r.left, r.right, r.bottom];
+    for (let n = el.parentElement; n && n !== document.body; n = n.parentElement) {
+      const s = getComputedStyle(n);
+      if (s.overflow === 'visible' && s.overflowX === 'visible' && s.overflowY === 'visible') continue;
+      const c = n.getBoundingClientRect();
+      top = Math.max(top, c.top); left = Math.max(left, c.left);
+      right = Math.min(right, c.right); bottom = Math.min(bottom, c.bottom);
+    }
+    return (right - left < 1 || bottom - top < 1) ? null : {top, left, right, bottom};
+  };
+  const panes = [['abar', 'the activity bar'], ['ide-side', 'the side panel'],
+                 ['stage', 'the editor'], ['mission', 'the mission panel']]
+    .map(([id, name]) => ({name, node: document.getElementById(id),
+                           r: clipped(document.getElementById(id))}))
+    .filter((p) => p.r);
+  const bad = [];
+  panes.forEach((pane) => {
+    pane.node.querySelectorAll('*').forEach((child) => {
+      const r = clipped(child);
+      if (!r || getComputedStyle(child).position === 'fixed') return;
+      panes.forEach((other) => {
+        if (other === pane || bad.length > 3) return;
+        const w = Math.min(r.right, other.r.right) - Math.max(r.left, other.r.left);
+        const h = Math.min(r.bottom, other.r.bottom) - Math.max(r.top, other.r.top);
+        if (w > 1 && h > 1)
+          bad.push((child.id || child.tagName) + ' from ' + pane.name +
+                   ' over ' + other.name + ' by ' + Math.round(w) + 'x' + Math.round(h));
+      });
+    });
+  });
+  return bad;
+}
+"""
+
+
+def test_a_turn_shows_up_in_the_mission_panel(window):
+    """Asking from the Code surface used to look like nothing had happened.
+
+    The message went, and the answer streamed — into the transcript on the other
+    surface. From the Code surface you saw a one-line echo and then, eventually,
+    a truncated one-liner. The whole turn belongs in the panel you asked from.
+    """
+    page, app, errors = window
+    page.evaluate("Ide.surface('code'); Ide.mission.clear()")
+    page.wait_for_timeout(300)
+
+    app.hud.log_user("what does this file do?")
+    app.hud.log_tool_start("file_ops", {"path": "jarvis/theme.py"})
+    app.hud.log_tool("file_ops", "read 754 lines")
+    app.hud.stream_begin()
+    for token in ("It ", "derives ", "a whole ", "interface ", "from one colour."):
+        app.hud.stream_token(token)
+    app.hud.stream_end("It derives a whole interface from one colour.\n\n"
+                       "```python\naccent = seed\n```")
+    page.wait_for_timeout(900)
+
+    kinds = page.evaluate(
+        "[...document.querySelectorAll('#thread .tmsg')].map((n) => n.className)")
+    assert any("t-you" in k for k in kinds), kinds
+    assert any("t-tool" in k for k in kinds), kinds
+    assert any("t-agent" in k for k in kinds), kinds
+    assert "derives a whole interface" in page.inner_text("#thread")
+
+    # An answer with code in it offers to put that code in the file.
+    assert page.evaluate("document.querySelectorAll('#thread .codeblock .insert').length") == 1
+    shape = page.evaluate("""() => {
+      const r = document.querySelector('#thread .insert').getBoundingClientRect();
+      return {w: Math.round(r.width), h: Math.round(r.height)};
+    }""")
+    # A word in a 20px icon button prints itself one letter to a line.
+    assert shape["w"] > 34 and shape["h"] < 30, shape
+
+    page.evaluate("Ide.mission.clear(); Ide.surface('chat')")
+    page.wait_for_timeout(300)
+
+
+def test_clearing_the_mission_panel_does_not_destroy_its_prompt(window):
+    """The same bug the welcome card had: cleared away, never restored."""
+    page, app, errors = window
+    page.evaluate("Ide.surface('code')")
+    page.wait_for_timeout(250)
+    for _ in range(3):
+        app.hud.log_user("something to clear")
+        page.wait_for_timeout(200)
+        page.evaluate("Ide.mission.clear()")
+        page.wait_for_timeout(200)
+        assert page.evaluate("!!document.querySelector('#thread .thread-empty:not([hidden])')")
+    page.evaluate("Ide.surface('chat')")
+    page.wait_for_timeout(250)

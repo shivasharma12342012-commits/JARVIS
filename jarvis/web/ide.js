@@ -1038,21 +1038,23 @@ const Ide = {
 
   sideOpen() { return !$('ide').classList.contains('no-side') || $('ide').classList.contains('show-side'); },
 
+  /* Both classes are written every time, never just the one this width happens
+     to use. A pane collapsed while the window was wide and then reopened while
+     it was narrow otherwise carries a stale `no-side` into the overlay rules,
+     and which of the two wins comes down to their order in the stylesheet. */
   setSide(open) {
     const ide = $('ide');
     ide.classList.add('animate');
-    const narrow = window.matchMedia('(max-width: 1000px)').matches;
-    if (narrow) ide.classList.toggle('show-side', open);
-    else ide.classList.toggle('no-side', !open);
+    ide.classList.toggle('no-side', !open);
+    ide.classList.toggle('show-side', open && window.matchMedia('(max-width: 1000px)').matches);
     setTimeout(() => { ide.classList.remove('animate'); Ed.drawMap(); }, 360);
   },
 
   setMission(open) {
     const ide = $('ide');
     ide.classList.add('animate');
-    const narrow = window.matchMedia('(max-width: 1240px)').matches;
-    if (narrow) ide.classList.toggle('show-mission', open);
-    else ide.classList.toggle('no-mission', !open);
+    ide.classList.toggle('no-mission', !open);
+    ide.classList.toggle('show-mission', open && window.matchMedia('(max-width: 1240px)').matches);
     setTimeout(() => { ide.classList.remove('animate'); Ed.drawMap(); }, 360);
   },
 
@@ -1534,9 +1536,26 @@ const Ide = {
     },
   },
 
-  /* -- the mission panel --------------------------------------------------- */
+  /* -- the mission panel ---------------------------------------------------
+     One agent, one conversation, two views of it. Asking from here used to post
+     the message and print a one-line echo while the reply streamed into the
+     transcript on the other surface, so from the Code surface it looked like
+     nothing had happened. The thread below is that same conversation, rendered
+     here, streaming token by token, with the instrument calls in place.
+     ------------------------------------------------------------------------ */
   mission: {
+    streaming: null,      // the element the tokens are landing in
+    buffer: '',
+    empty: true,
+
     init() {
+      this.thread = $('thread');
+      this.box = $('mission-input');
+      // Kept before anything can remove it. Clearing the thread used to wipe
+      // the empty-state prompt along with the messages, and nothing ever put it
+      // back \u2014 the same way clearing the transcript once destroyed the welcome.
+      this.blank = $('thread-empty').cloneNode(true);
+
       const acts = $('acts');
       ACTIONS.forEach((action) => {
         const button = el('button', 'act', action[0]);
@@ -1545,18 +1564,33 @@ const Ide = {
         button.onclick = () => this.ask(action[1]);
         acts.appendChild(button);
       });
+
       $('btn-mission-send').onclick = () => this.send();
-      $('mission-input').addEventListener('keydown', (event) => {
-        if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); this.send(); }
+      $('btn-mission-stop').onclick = () => {
+        api('/api/interrupt', {}).catch(() => {});
+        this.note('interrupted');
+      };
+      $('btn-mission-clear').onclick = () => this.clear();
+      this.box.addEventListener('keydown', (event) => {
+        // Enter sends. A question to an assistant is one line far more often
+        // than it is several, and Shift+Enter is there for when it is not.
+        if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); this.send(); }
         if (event.key === 'Escape') event.stopPropagation();
       });
+      this.box.addEventListener('input', () => this.autosize());
       this.artifacts();
+    },
+
+    autosize() {
+      this.box.style.height = 'auto';
+      this.box.style.height = Math.min(this.box.scrollHeight, 160) + 'px';
     },
 
     scope(selected) {
       $('mission-scope').textContent = selected ? 'the selection' : 'whole file';
     },
 
+    /* -- what gets sent with the question ---------------------------------- */
     context() {
       const doc = Ide.docs.get(Ide.current);
       if (!doc) return '';
@@ -1571,25 +1605,168 @@ const Ide = {
     },
 
     ask(shape) {
-      const doc = Ide.docs.get(Ide.current);
-      if (!doc) { toast('Open a file first.'); return; }
-      $('mission-input').value = shape;
+      if (!Ide.docs.get(Ide.current)) { toast('Open a file first.'); return; }
+      this.box.value = shape;
       this.send();
     },
 
     send() {
-      const box = $('mission-input');
-      const question = box.value.trim();
-      if (!question) { box.focus(); return; }
+      const question = this.box.value.trim();
+      if (!question) { this.box.focus(); return; }
       const context = this.context();
       api('/api/chat', { text: context ? question + '\n\n' + context : question })
-        .catch((err) => toast('Could not send that: ' + err.message));
-      box.value = '';
-      this.feed('you asked: ' + question.slice(0, 90), 'user');
+        .catch((err) => {
+          this.note('could not send that: ' + err.message, 'error');
+          toast('Could not send that: ' + err.message);
+        });
+      this.box.value = '';
+      this.autosize();
+      this.box.focus();
     },
 
+    /* -- the thread --------------------------------------------------------- */
+    open() {
+      if (!this.empty) return;
+      const blank = this.thread.querySelector('.thread-empty');
+      if (blank) blank.hidden = true;
+      this.empty = false;
+    },
+
+    toBottom() {
+      // Only follow when the reader is already at the bottom. Yanking someone
+      // back down mid-scroll is the rudest thing a log can do.
+      const near = this.thread.scrollHeight - this.thread.scrollTop - this.thread.clientHeight < 90;
+      if (near) this.thread.scrollTop = this.thread.scrollHeight;
+    },
+
+    trim() {
+      while (this.thread.children.length > 220) this.thread.removeChild(this.thread.firstChild);
+    },
+
+    row(kind) {
+      this.open();
+      const node = el('div', 'tmsg t-' + kind);
+      this.thread.appendChild(node);
+      this.trim();
+      return node;
+    },
+
+    /* A question, shown as the operator wrote it. The file context appended to
+       the wire message is not repeated here — you can see the file. */
+    question(text) {
+      const row = this.row('you');
+      const body = el('div', 'tbody');
+      body.textContent = String(text).split('\n\n`')[0];
+      row.append(el('div', 'twho micro', 'You'), body);
+      this.toBottom();
+    },
+
+    answer(text) {
+      const row = this.row('agent');
+      const body = el('div', 'tbody');
+      body.innerHTML = markdown(text);
+      row.append(body);
+      this.decorate(body);
+      this.toBottom();
+    },
+
+    note(text, level) {
+      const row = this.row('note' + (level ? ' ' + level : ''));
+      row.textContent = text;
+      this.toBottom();
+    },
+
+    tool(name, detail, ok) {
+      const row = this.row('tool' + (ok === false ? ' failed' : ''));
+      row.append(el('span', 'tdot'), el('span', 'tname', name));
+      if (detail) row.append(el('span', 'tdetail', short(detail, 80)));
+      this.toBottom();
+      return row;
+    },
+
+    /* -- streaming ---------------------------------------------------------- */
+    begin() {
+      this.buffer = '';
+      const row = this.row('agent');
+      this.streaming = el('div', 'tbody streaming');
+      row.append(this.streaming);
+      this.busy(true);
+      this.toBottom();
+    },
+
+    token(text) {
+      if (!this.streaming) this.begin();
+      this.buffer += text;
+      this.streaming.textContent = this.buffer;
+      this.toBottom();
+    },
+
+    end(finalText) {
+      this.busy(false);
+      const text = finalText || this.buffer;
+      if (!this.streaming) {
+        if (text && text.trim()) this.answer(text);
+        return;
+      }
+      const body = this.streaming;
+      this.streaming = null;
+      this.buffer = '';
+      if (!text.trim()) { const row = body.closest('.tmsg'); if (row) row.remove(); return; }
+      body.classList.remove('streaming');
+      body.innerHTML = markdown(text);
+      this.decorate(body);
+      this.toBottom();
+    },
+
+    busy(on) {
+      $('btn-mission-stop').hidden = !on;
+      $('btn-mission-send').hidden = on;
+    },
+
+    /* Every code block in an answer gets Copy, and — when there is a file open
+       to put it in — Insert, which drops it at the caret. An assistant that can
+       only show you the fix is half an assistant. */
+    decorate(body) {
+      wireCodeBlocks(body);
+      body.querySelectorAll('.codeblock').forEach((block) => {
+        if (block.dataset.inserted) return;
+        block.dataset.inserted = '1';
+        const head = block.querySelector('.codeblock-head') || block.firstElementChild;
+        if (!head) return;
+        // `wide` is the text variant. Without it `.mini-btn` is a 20px square
+        // built for an icon, and a word put in one prints straight down the
+        // side of the code block, a letter to a line.
+        const insert = el('button', 'mini-btn wide insert', 'Insert');
+        insert.type = 'button';
+        insert.title = 'Put this at the caret in the editor';
+        insert.onclick = () => {
+          if (!Ed.doc) { toast('Open a file to insert into.'); return; }
+          if (Ed.input.readOnly) { toast('That file is read-only.'); return; }
+          const code = block.querySelector('code').textContent.replace(/\n$/, '');
+          Ed.put(code, Ed.input.selectionStart, Ed.input.selectionEnd);
+          insert.textContent = 'Inserted';
+          setTimeout(() => { insert.textContent = 'Insert'; }, 1600);
+        };
+        head.appendChild(insert);
+      });
+    },
+
+    clear() {
+      this.thread.textContent = '';
+      const blank = this.blank.cloneNode(true);
+      blank.hidden = false;
+      this.thread.appendChild(blank);
+      this.empty = true;
+      this.streaming = null;
+      this.buffer = '';
+      this.busy(false);
+    },
+
+    /* The compact activity list in the Agent panel, kept for the times you want
+       the shape of a turn rather than its content. */
     feed(text, kind) {
       const host = $('feed');
+      if (!host) return;
       const item = el('div', 'fitem');
       item.dataset.kind = kind || 'info';
       item.append(el('span', 'fdot'), el('span', 'ftxt', text));
@@ -1722,25 +1899,52 @@ const Ide = {
         try { extra(data); } catch (err) { /* a decoration must never break the stream */ }
       };
     };
+    // The turn itself, rendered here as well as in the transcript.
+    wrap('user', (d) => this.mission.question(d.text));
+    wrap('agent', (d) => {
+      this.mission.answer(d.text);
+      this.mission.feed(short(flat(d.text), 130), 'info');
+    });
+    wrap('stream_begin', () => this.mission.begin());
+    wrap('token', (d) => this.mission.token(d.text));
+    wrap('stream_end', (d) => { if (!d.interim) this.mission.end(d.text); });
+    wrap('thought', (d) => { if (d.text) this.mission.note(short(flat(d.text), 120)); });
+    wrap('clear', () => this.mission.clear());
+
     wrap('tool_start', (d) => {
-      this.mission.feed(d.name + (d.arguments ? ' ' + short(JSON.stringify(d.arguments)) : ''), 'tool');
+      const detail = d.arguments ? short(JSON.stringify(d.arguments), 80) : '';
+      this.mission.tool(d.name, detail);
+      this.mission.feed(d.name + (detail ? ' ' + detail : ''), 'tool');
       this.dock.output(d.name + ' \u2026');
-      this.noticeFile(d.arguments);
     });
     wrap('tool_end', (d) => {
-      this.mission.feed(d.name + ' \u2192 ' + short(d.summary || (d.ok ? 'done' : 'failed')), d.ok ? 'tool' : 'error');
-      this.dock.output(d.name + ' \u2192 ' + (d.summary || (d.ok ? 'done' : 'failed')), d.ok ? '' : 'error');
+      const said = d.summary || (d.ok ? 'done' : 'failed');
+      this.mission.tool(d.name, '\u2192 ' + said, d.ok);
+      this.mission.feed(d.name + ' \u2192 ' + short(said), d.ok ? 'tool' : 'error');
+      this.dock.output(d.name + ' \u2192 ' + said, d.ok ? '' : 'error');
+      // After it ran, not before: a file is worth re-reading once the
+      // instrument that touched it has finished touching it.
+      if (d.ok !== false) this.noticeFile(d.arguments);
     });
     wrap('system', (d) => {
-      if (d.level === 'warn' || d.level === 'error') this.dock.output(d.text, d.level);
+      if (d.level === 'warn' || d.level === 'error') {
+        this.dock.output(d.text, d.level);
+        this.mission.note(d.text, d.level);
+      }
     });
-    wrap('agent', (d) => this.mission.feed(short(flat(d.text), 130), 'info'));
     wrap('state', (d) => {
       $('mission-label').textContent =
         { idle: 'Idle', thinking: 'Thinking', working: 'Working',
           listening: 'Listening', speaking: 'Speaking' }[d.state] || d.state;
+      // A turn that ends without a stream_end \u2014 an error, an interrupt \u2014 must
+      // still put the Stop button away.
+      if (d.state === 'idle') this.mission.busy(false);
     });
-    wrap('code', (d) => { if (d.title) this.dock.output('rendered ' + d.title); });
+    wrap('code', (d) => {
+      this.mission.answer('```' + (d.language || '') + '\n' + d.code + '\n```');
+      if (d.title) this.dock.output('rendered ' + d.title);
+    });
+    wrap('shutdown', () => this.mission.busy(false));
   },
 
   /* A tool argument that names a file in this workspace is worth noticing: it
@@ -1762,16 +1966,20 @@ const Ide = {
   async refresh(path) {
     const doc = this.docs.get(path);
     if (!doc) return;
+    let data;
+    try { data = await api('/api/file?path=' + encodeURIComponent(path)); }
+    catch (err) { return; }
+    if (!data || data.error || data.binary) return;
+    // The digest is checked before anything is said. An instrument that merely
+    // read the file names it in its arguments exactly as one that wrote to it
+    // does, so warning on the name alone announced "changed on disk" every time
+    // the agent so much as looked at the file you had open.
+    if (data.digest === doc.digest) return;
     if (Doc.dirty(doc)) {
       this.dock.output(doc.name + ' changed on disk, and you have unsaved changes here', 'warn');
       toast(doc.name + ' changed on disk. Your version is still here, unsaved.');
       return;
     }
-    let data;
-    try { data = await api('/api/file?path=' + encodeURIComponent(path)); }
-    catch (err) { return; }
-    if (!data || data.error || data.binary) return;
-    if (data.digest === doc.digest) return;
     doc.text = data.content;
     doc.saved = data.content;
     doc.digest = data.digest;
