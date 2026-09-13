@@ -1410,3 +1410,71 @@ def test_every_call_phrase_survives_the_wake_normaliser():
     spellings = " ".join(settings.WAKE_WORDS).lower()
     for expected in ("hello jarvis", "namaste jarvis", "lagu jarvis"):
         assert expected in spellings, expected
+
+
+# ══ the greeting on the page ═════════════════════════════════════════════════════════
+# The line is written by a language model, which is to say by something that will
+# happily put a </script> in the middle of a sentence if the conversation wandered
+# that way. It reaches the page twice — once as text in the markup, once inside an
+# inline script — and both have to be sealed.
+@pytest.fixture
+def greeting_bank(app, tmp_path, monkeypatch):
+    """A bank in a scratch file, so tests never touch the real one."""
+    from jarvis import greeting as greeting_mod
+
+    monkeypatch.setattr(greeting_mod, "BANK_PATH", tmp_path / "greetings.json")
+    app.greeter = greeting_mod.Greeter()
+    return app
+
+
+def _page(app):
+    return _request(app, "/").read().decode("utf-8")
+
+
+def test_the_window_opens_on_a_greeting(app):
+    page = _page(app)
+    assert "__JARVIS_GREETING__" not in page
+    assert "Sir" in page
+
+
+def test_the_greeting_reaches_the_page_twice_and_agrees_with_itself(greeting_bank):
+    greeting_bank.greeter.bank.add("Evening, Sir. The workshop is quiet.")
+    page = _page(greeting_bank)
+    assert "Evening, Sir. The workshop is quiet." in page
+    assert page.count("Evening, Sir. The workshop is quiet.") >= 2
+
+
+def test_a_greeting_cannot_close_the_script_it_is_written_into(greeting_bank):
+    greeting_bank.greeter.bank.add("Evening, Sir. </script><script>window.PWNED=1;</script>")
+    page = _page(greeting_bank)
+    assert "</script><script>window.PWNED" not in page
+    assert "\\u003c/script" in page or "&lt;/script" in page
+    # The page's own scripts still balance: nothing was cut short.
+    assert page.count("<script") == page.count("</script>")
+
+
+def test_a_greeting_cannot_add_markup_to_the_page(greeting_bank):
+    greeting_bank.greeter.bank.add("Evening, Sir. <img src=x onerror=alert(1)>")
+    page = _page(greeting_bank)
+    assert "<img src=x" not in page
+    assert "&lt;img" in page or "\\u003cimg" in page
+
+
+def test_a_different_line_every_time_the_window_opens(greeting_bank):
+    for index in range(4):
+        greeting_bank.greeter.bank.add(f"Greeting number {index}, Sir.")
+    shown = []
+    for _ in range(6):
+        page = _page(greeting_bank)
+        shown.append(next(index for index in range(4)
+                          if f"Greeting number {index}, Sir." in page))
+    assert all(shown[i] != shown[i + 1] for i in range(len(shown) - 1))
+
+
+def test_asking_for_the_state_does_not_use_up_a_greeting(greeting_bank):
+    """A greeting belongs to a window opening, not to every poll of /api/state."""
+    greeting_bank.greeter.bank.add("Evening, Sir.")
+    before = greeting_bank.greeter.bank.last
+    payload = json.loads(_request(greeting_bank, "/api/state").read().decode("utf-8"))
+    assert "greeting" not in payload
+    assert greeting_bank.greeter.bank.last == before

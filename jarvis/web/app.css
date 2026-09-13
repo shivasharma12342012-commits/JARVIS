@@ -487,6 +487,11 @@ body[data-state="speaking"] .wake-edge {
 }
 .suggestion:hover { border-color: var(--line-strong); color: var(--text); background: var(--surface); }
 
+/* The greeting crossing over to a newer one. Short, and only ever seen when the
+   model answered quickly enough to be worth interrupting yourself for. */
+#greeting { transition: opacity .26s var(--ease); }
+#greeting.fading { opacity: 0; }
+
 /* ── messages ─────────────────────────────────────────────────────────────── */
 .msg { display: flex; gap: 11px; max-width: 780px; width: 100%; margin: 0 auto;
        animation: rise var(--normal) var(--ease) both; }
