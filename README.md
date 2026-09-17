@@ -142,7 +142,7 @@ Speech recognition never returns the dots, so `Hello J.A.R.V.I.S.`, `hello jarvi
 even `hello j a r v i s` all normalise to the same phrase. Common mishearings of the name
 (`jervis`, `javis`, `jarwis`) are accepted too, and each greeting is configured under
 several spellings — a recogniser hands back what it heard rather than what was meant, and
-a greeting that only works when the microphone spells it your way is not a greeting.
+a greeting that only works when the microphone spells it your way is not a greeting. So greet him however you want
 
 ### The window turns blue
 
