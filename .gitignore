@@ -13,6 +13,9 @@ logs/
 # the project's. Nothing here ever contains a password in the clear.
 .jarvis_credentials.json
 .env
+# School portal database and private uploads.
+data/
+.env.local
 
 # Environments and test caches.
 .venv/

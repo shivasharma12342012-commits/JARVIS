@@ -50,6 +50,36 @@ languages including Hindi, Bengali, Telugu, Marathi and Tamil.
 
 ## Quick start
 
+### Teacher school portal (initial institutional slice)
+
+This is a draft implementation for local development, not a production school
+deployment. Streaming, document extraction, the full teaching toolkit, rate limits,
+and deployment security hardening remain unfinished.
+
+The repository now includes a separate teacher-only web portal. It keeps the existing
+desktop assistant and its local shell/editor boundary intact while adding SQLite-backed
+school accounts, teacher/admin roles, private workspace items, approved school knowledge,
+document validation and a lesson-plan workflow powered by the configured Ollama model.
+
+```bash
+cp .env.example .env
+python main.py portal
+```
+
+Open `http://127.0.0.1:8787`, create the first administrator, then use Administration to
+create teacher accounts and add approved school sources. The first administrator setup is
+only allowed when the database has no users. Sessions are HttpOnly, SameSite cookies with
+an environment-configurable expiry. Teachers can only read and delete their own workspace
+items; administrators can view health and usage summaries and curate school knowledge.
+
+Ollama remains the initial AI provider. If it is stopped, the portal reports that it is
+unavailable and does not fabricate a lesson plan. Configure `JARVIS_PORTAL_DB`,
+`JARVIS_PORTAL_STORAGE`, `JARVIS_SCHOOL_NAME`, and the other portal values in the
+process environment. `.env.example` documents those values; portal-specific values
+are not yet loaded automatically from `.env`.
+See [docs/ARCHITECTURE_AUDIT.md](docs/ARCHITECTURE_AUDIT.md) for the migration decisions,
+security boundary and the next implementation phases.
+
 ```powershell
 cd C:\Users\Shiva\J.A.R.V.I.S._AI
 

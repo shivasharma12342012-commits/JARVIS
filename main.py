@@ -164,8 +164,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "command",
         nargs="?",
         default=None,
-        choices=["desktop", "app", "gui", "window", "set-password", "clear-password"],
-        help='"desktop" opens the windowed front end; "set-password" locks it',
+        choices=["desktop", "app", "gui", "window", "portal", "set-password", "clear-password"],
+        help='"desktop" opens the local operator window; "portal" opens the teacher-only school portal',
     )
     parser.add_argument(
         "--desktop",
@@ -179,6 +179,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=0,
         help="port for the desktop app (default: whatever the OS hands out)",
     )
+    parser.add_argument("--portal-host", default=None, help="host for the teacher school portal (default: 127.0.0.1)")
+    parser.add_argument("--portal-port", type=int, default=None, help="port for the teacher school portal (default: 8787)")
+    parser.add_argument("--portal-db", default=None, help="SQLite path for the teacher school portal")
     parser.add_argument(
         "--no-window",
         action="store_true",
@@ -2372,6 +2375,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command in {"set-password", "clear-password"}:
         return manage_password(args.command == "clear-password")
+
+    if args.command == "portal":
+        from jarvis.school_portal import run as run_school_portal
+        return run_school_portal(args.portal_host, args.portal_port, args.portal_db)
 
     if args.desktop or args.command in {"desktop", "app", "gui", "window"}:
         return run_desktop(args)
