@@ -1415,7 +1415,7 @@ It runs code in a throwaway directory, in a subprocess, with a timeout. That is 
 isolation, not a security sandbox** — the code executes with this application's own
 privileges and can reach your filesystem and network. Veronica lockdown blocks obviously
 destructive source, and `run_command` keeps a refusal list, but both are seatbelts rather
-than airbags. Treat it as you would treat running a script somebody sent you.
+than airbags. Treat it as you would treat running a script somebody sent you. --FLOAT--
 
 ---
 
