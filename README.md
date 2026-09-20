@@ -129,7 +129,7 @@ Verify with `curl http://127.0.0.1:11434/api/version`, or just run
 
 ## First run
 
-On first launch J.A.R.V.I.S. asks one question:
+On first launch FLOAT asks one question:
 
 ```
 ╭──────────────────────────────────────────╮
